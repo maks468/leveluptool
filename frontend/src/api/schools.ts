@@ -1,0 +1,90 @@
+import { api } from "./client"
+import type { CityFacet, FacetScope, LibraryFilters, School, SchoolContact, SchoolListResponse, VoivodeshipFacet } from "@/types/domain"
+
+export function filtersToParams(filters: LibraryFilters): Record<string, string> {
+  const params: Record<string, string> = {}
+  if (filters.voivodeship) params.voivodeship = filters.voivodeship
+  if (filters.city) params.city = filters.city
+  if (filters.school_type && filters.school_type !== "all") params.school_type = filters.school_type
+  params.ownership_public = String(filters.ownership_public)
+  params.ownership_private = String(filters.ownership_private)
+  // Always send this (even "" when no subtype is checked) so an
+  // intentionally-empty subtype selection narrows results to none, rather
+  // than being indistinguishable from "no subtype filter requested".
+  if (filters.ownership_private) {
+    params.ownership_subtype = filters.ownership_subtype.join(",")
+  }
+  params.ownership_include_unverified = String(filters.ownership_include_unverified)
+  if (filters.students_min !== null) params.students_min = String(filters.students_min)
+  if (filters.students_max !== null) params.students_max = String(filters.students_max)
+  params.students_include_unknown = String(filters.students_include_unknown)
+  if (filters.score_min !== null) params.score_min = String(filters.score_min)
+  if (filters.score_max !== null) params.score_max = String(filters.score_max)
+  params.score_include_unscored = String(filters.score_include_unscored)
+  params.include_adult_education = String(filters.include_adult_education)
+  return params
+}
+
+/** Properly-typed filter payload for JSON request bodies (POST /pipeline/pull),
+ * as opposed to filtersToParams' stringified version for URLSearchParams. */
+export function filtersToApiBody(filters: LibraryFilters): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    ownership_public: filters.ownership_public,
+    ownership_private: filters.ownership_private,
+    ownership_include_unverified: filters.ownership_include_unverified,
+    students_include_unknown: filters.students_include_unknown,
+  }
+  if (filters.voivodeship) body.voivodeship = filters.voivodeship
+  if (filters.city) body.city = filters.city
+  if (filters.school_type && filters.school_type !== "all") body.school_type = filters.school_type
+  if (filters.ownership_private) {
+    body.ownership_subtype = filters.ownership_subtype.join(",")
+  }
+  if (filters.students_min !== null) body.students_min = filters.students_min
+  if (filters.students_max !== null) body.students_max = filters.students_max
+  if (filters.score_min !== null) body.score_min = filters.score_min
+  if (filters.score_max !== null) body.score_max = filters.score_max
+  body.score_include_unscored = filters.score_include_unscored
+  body.include_adult_education = filters.include_adult_education
+  return body
+}
+
+function toQueryString(params: Record<string, string>): string {
+  const qs = new URLSearchParams(params).toString()
+  return qs ? `?${qs}` : ""
+}
+
+export async function listSchools(
+  filters: LibraryFilters,
+  page: number,
+  pageSize: number,
+  sort = "score:desc",
+  resultLimit?: number | null
+): Promise<SchoolListResponse> {
+  const params: Record<string, string> = { ...filtersToParams(filters), page: String(page), page_size: String(pageSize), sort }
+  if (resultLimit) params.result_limit = String(resultLimit)
+  return api.get<SchoolListResponse>(`/schools${toQueryString(params)}`)
+}
+
+export async function countSchools(filters: LibraryFilters): Promise<number> {
+  const { count } = await api.get<{ count: number }>(`/schools/count${toQueryString(filtersToParams(filters))}`)
+  return count
+}
+
+export async function getSchool(id: number): Promise<School> {
+  return api.get<School>(`/schools/${id}`)
+}
+
+export async function getSchoolContacts(id: number): Promise<SchoolContact[]> {
+  return api.get<SchoolContact[]>(`/schools/${id}/contacts`)
+}
+
+export async function listVoivodeships(scope: FacetScope = "library"): Promise<VoivodeshipFacet[]> {
+  return api.get<VoivodeshipFacet[]>(`/schools/facets/voivodeships?scope=${scope}`)
+}
+
+export async function listCities(voivodeship: string | null, scope: FacetScope = "library"): Promise<CityFacet[]> {
+  const params = new URLSearchParams({ scope })
+  if (voivodeship) params.set("voivodeship", voivodeship)
+  return api.get<CityFacet[]>(`/schools/facets/cities?${params.toString()}`)
+}

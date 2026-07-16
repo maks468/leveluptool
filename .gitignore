@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# Keep runtime state (the live DB, WAL files, caches, downloaded sources)
+# out of git -- but DO ship the seed library (public RSPO data, no contacts)
+# so a clone/deploy comes up pre-loaded with zero import.
+/data/*
+!/data/seed/
+/data/seed/*
+!/data/seed/levelup_seed.db.gz
+
+frontend/node_modules/
+frontend/dist/
+.env

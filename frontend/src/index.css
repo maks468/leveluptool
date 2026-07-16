@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+:root {
+  --color-bg: #f8fafc;
+  --color-surface: #ffffff;
+  --color-border: #e2e8f0;
+  --color-text: #0f172a;
+  --color-text-muted: #64748b;
+  --color-accent: #4f46e5;
+  --color-accent-fg: #ffffff;
+  --score-s: 68%;
+  --score-l: 34%;
+  --score-bg-a: 0.12;
+  --score-border-a: 0.35;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #0b1120;
+    --color-surface: #111827;
+    --color-border: #1f2937;
+    --color-text: #e5e7eb;
+    --color-text-muted: #94a3b8;
+    --color-accent: #6366f1;
+    --color-accent-fg: #ffffff;
+    --score-s: 60%;
+    --score-l: 66%;
+    --score-bg-a: 0.18;
+    --score-border-a: 0.4;
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-bg: #0b1120;
+  --color-surface: #111827;
+  --color-border: #1f2937;
+  --color-text: #e5e7eb;
+  --color-text-muted: #94a3b8;
+  --color-accent: #6366f1;
+  --color-accent-fg: #ffffff;
+  --score-s: 60%;
+  --score-l: 66%;
+  --score-bg-a: 0.18;
+  --score-border-a: 0.4;
+}
+
+:root[data-theme="light"] {
+  --color-bg: #f8fafc;
+  --color-surface: #ffffff;
+  --color-border: #e2e8f0;
+  --color-text: #0f172a;
+  --color-text-muted: #64748b;
+  --color-accent: #4f46e5;
+  --color-accent-fg: #ffffff;
+  --score-s: 68%;
+  --score-l: 34%;
+  --score-bg-a: 0.12;
+  --score-border-a: 0.35;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+}
+
+/* Continuous green-to-red score grade -- --score-hue is set inline per
+   score (0 = red, 145 = green); saturation/lightness/alpha come from the
+   theme tokens above so the badge stays readable in both themes. */
+.score-badge {
+  color: hsl(var(--score-hue) var(--score-s) var(--score-l));
+  background: hsl(var(--score-hue) var(--score-s) var(--score-l) / var(--score-bg-a));
+  border-color: hsl(var(--score-hue) var(--score-s) var(--score-l) / var(--score-border-a));
+}
+
+.score-dot {
+  background: hsl(var(--score-hue) var(--score-s) var(--score-l));
+}

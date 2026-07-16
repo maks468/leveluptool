@@ -1,0 +1,13 @@
+# Keep the build context small and never bake local *live* state into the
+# image -- but DO include the seed library so the image is self-contained.
+.venv/
+**/__pycache__/
+*.pyc
+data/*
+!data/seed
+data/seed/*
+!data/seed/levelup_seed.db.gz
+frontend/node_modules/
+frontend/dist/
+.git/
+.env

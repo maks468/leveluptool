@@ -1,0 +1,48 @@
+# Static reference table of Polish city population, sourced from public
+# GUS census figures (not scraped, not per-school). Only the *tier* a city
+# falls into matters for scoring; populations are kept for reference and
+# are approximate as of recent years -- edit freely as figures update.
+launch_cities:
+  - Warszawa
+  - Kraków
+  - Wrocław
+  - Gdańsk
+
+# Any city with population >= 100,000 that isn't a launch city above.
+# Not exhaustive to the last resident, but covers Poland's ~100k+ cities.
+cities_100k_plus:
+  Łódź: 650000
+  Poznań: 530000
+  Szczecin: 390000
+  Bydgoszcz: 330000
+  Lublin: 330000
+  Białystok: 290000
+  Katowice: 280000
+  Gdynia: 245000
+  Częstochowa: 210000
+  Radom: 200000
+  Rzeszów: 195000
+  Toruń: 195000
+  Sosnowiec: 190000
+  Kielce: 190000
+  Gliwice: 170000
+  Olsztyn: 165000
+  Bielsko-Biała: 165000
+  Zabrze: 160000
+  Bytom: 155000
+  Zielona Góra: 140000
+  Ruda Śląska: 135000
+  Rybnik: 130000
+  Opole: 125000
+  Tychy: 125000
+  Gorzów Wielkopolski: 120000
+  Tarnów: 105000
+  Chorzów: 105000
+  Elbląg: 112000
+  Płock: 110000
+  Dąbrowa Górnicza: 110000
+  Wałbrzych: 105000
+  Włocławek: 100000
+  Koszalin: 102000
+
+# Anything else -> "smaller_town" tier.

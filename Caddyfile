@@ -1,0 +1,15 @@
+# Replace with your real domain. Point a DNS A record for it at this VM's
+# public IP first -- Caddy then fetches and auto-renews a TLS certificate.
+YOUR-DOMAIN.example.com {
+    encode gzip
+
+    # Gate for a few teammates. Generate a bcrypt hash for each password:
+    #   docker run --rm caddy caddy hash-password --plaintext 'STRONG-PASSWORD'
+    # Paste it below; add one line per person (username  hash).
+    # (On Caddy < 2.7 the directive is `basicauth`, not `basic_auth`.)
+    basic_auth {
+        team $2a$14$REPLACE_WITH_THE_BCRYPT_HASH_YOU_GENERATED
+    }
+
+    reverse_proxy app:8322
+}

@@ -1,0 +1,72 @@
+# Secondary rubric -- liceum + technikum. Sums to 100 when every criterion
+# is fully verified. Bump `version` any time you change a value below --
+# it gets stamped onto every school_scores row so old and new scores are
+# distinguishable, and `python -m levelup.cli.rescore` re-applies these
+# weights to every school WITHOUT needing a re-import.
+#
+# 2026.2 rebalance: language_orientation and ranking are unknown for ~97%
+# of schools pre-enrichment (RSPO's bulk export can only ever confirm the
+# "bilingual" tier by name, and Perspektywy only ranks ~1000 of Poland's
+# ~6000 secondary schools nationally), so together they used to make up to
+# 48 of the 100 points structurally unreachable for nearly every school --
+# capping genuinely strong leads well short of a good score before
+# enrichment ever runs. Weight shifted from those two into the criteria
+# that are already verified for ~100% of schools (private_status,
+# city_size, level_fit) so a private, well-located, right-level school
+# scores well on-import without needing enrichment first. Both criteria
+# stay real, meaningful bonuses for schools that ARE bilingual/ranked --
+# just no longer able to single-handedly bury everyone else.
+#
+# 2026.3: removed the high/medium/low tier classification entirely --
+# schools are now compared purely by their raw 0-100 total_score (the UI
+# shows a continuous colour grade from that score, not a discrete label).
+version: "2026.3"
+
+criteria:
+  language_orientation:
+    max_points: 15
+    tiers:
+      bilingual: 15
+      english_first_plus_extra_language: 9
+      standard_english_only: 4
+    # Only the "bilingual" tier is verifiable straight from the RSPO bulk
+    # export (via "z oddziałami dwujęzycznymi" in the official school name).
+    # The other two tiers require enrichment of the school's own website --
+    # until that runs, a non-bilingual school scores 0/unknown here, not a
+    # guessed middle value.
+
+  school_size:
+    max_points: 28
+    linear_to_students: 700  # ~95th percentile; scales linearly, capped at max_points
+
+  ranking:
+    max_points: 12
+    tiers:
+      top_100_national: 12
+      top_300_or_strong_regional: 8
+      ranked_anywhere: 4
+    # Sourced from the annual Perspektywy PDF ranking, matched by
+    # name+city+voivodeship. Used only as an internal scoring signal.
+    # Being unranked is NOT the same as being bad -- only ~1000 licea +
+    # ~500 technika nationally are ranked at all -- so this stays a bonus,
+    # not a criterion most schools are expected to clear.
+
+  private_status:
+    max_points: 20
+    # Doubled from 10 -- ownership is one of the few criteria verified for
+    # ~100% of schools, so it should carry real discriminating weight
+    # rather than being drowned out by the unknown-heavy criteria above.
+
+  city_size:
+    max_points: 15
+    tiers:
+      launch_city: 15
+      other_big_city: 11
+      smaller_town: 6
+
+  level_fit:
+    max_points: 10
+    liceum: 10
+    technikum: 4
+    # Starting default: the product fits liceum better. Tune technikum's
+    # partial-credit value here if that changes.

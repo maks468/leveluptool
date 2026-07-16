@@ -1,0 +1,54 @@
+# Primary rubric -- podstawówka. Sums to 100 when every criterion is fully
+# verified. See secondary_rubric.yaml for how versioning/rescoring works.
+#
+# 2026.2 rebalance: language_orientation is unknown for ~99% of schools
+# pre-enrichment (RSPO's bulk export can only ever confirm the "bilingual"
+# tier by name), so at 33 points it was capping genuinely strong leads --
+# large, private, a real 8-year school, in a good city -- well short of
+# "high" before enrichment ever ran. Weight shifted from it into
+# private_status especially (verified for ~100% of schools) so ownership
+# carries real discriminating weight instead of being drowned out by one
+# mostly-unverifiable criterion. Language stays a real, meaningful bonus
+# for schools that ARE bilingual -- just no longer able to single-handedly
+# bury everyone else.
+#
+# 2026.3: removed the high/medium/low tier classification entirely --
+# schools are now compared purely by their raw 0-100 total_score (the UI
+# shows a continuous colour grade from that score, not a discrete label).
+version: "2026.3"
+
+criteria:
+  language_orientation:
+    max_points: 18
+    tiers:
+      bilingual: 18
+      english_first_plus_extra_language: 11
+      standard_english_only: 4
+    # Same caveat as the secondary rubric: only "bilingual" (oddział
+    # dwujęzyczny, kl. 7-8) is verifiable from the RSPO name at import.
+
+  school_size:
+    max_points: 28
+    linear_to_students: 600
+
+  private_status:
+    max_points: 27
+    # Doubled from 17 (roughly, alongside the language cut) -- one of the
+    # few criteria verified for ~100% of schools, so it should meaningfully
+    # separate leads rather than being outweighed by an unverifiable one.
+
+  target_cohort_present:
+    max_points: 16
+    # Verified via RSPO's "Rodzaj szkoły/placówki" field: a standalone or
+    # complex-member primary school is treated as a full 8-year school
+    # with klasy 7-8 present (the structural default under current Polish
+    # law since the 2017 reform); a "filia" (branch/satellite location)
+    # scores 0 as incomplete/branch, per RSPO's own record of it being a
+    # branch -- not a guess about its actual grade range.
+
+  city_size:
+    max_points: 11
+    tiers:
+      launch_city: 11
+      other_big_city: 8
+      smaller_town: 4
