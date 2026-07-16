@@ -664,8 +664,70 @@ def _collect_candidate_emails(soup: BeautifulSoup, text: str) -> list[str]:
     return deduped
 
 
+_NAME_GROUP_RE = re.compile(_NAME_GROUP)
+_ENGLISH_KEYWORD_RE = re.compile(rf"(?i:{_ENGLISH_KEYWORD})")
+# A run-together staff paragraph delimits each teacher with an academic
+# title ("mgr Jan Kowalski – ..."). Split just before each so one teacher's
+# subject cannot bind to the NEXT teacher's name.
+_TITLE_SPLIT_RE = re.compile(
+    r"(?=(?<![\wąćęłńóśźżĄĆĘŁŃÓŚŹŻ])(?:mgr|dr|in[żz]|prof|lic|ks)\.?\s+[A-ZŁŚŻŹĆŃÓĘĄ])"
+)
+
+
+def _staff_entries(soup: BeautifulSoup) -> list[str]:
+    """One text snippet per staff 'entry': a table ROW (its cells joined, so
+    a name cell and its subject cell stay together), a list item / paragraph
+    line (split on <br>), and each title-prefixed segment of a run-together
+    paragraph. Matching a subject to a name WITHIN one entry is what stops
+    the extractor from grabbing the ADJACENT teacher -- the "read the row,
+    not the whole flattened column" fix."""
+    entries: list[str] = []
+    for tr in soup.find_all("tr"):
+        row = re.sub(r"\s+", " ", tr.get_text(" ", strip=True))
+        if row:
+            entries.append(row)
+    for el in soup.find_all(["li", "dd", "p"]):
+        for line in el.get_text("\n").split("\n"):
+            line = re.sub(r"\s+", " ", line).strip()
+            if not line:
+                continue
+            parts = [p.strip() for p in _TITLE_SPLIT_RE.split(line) if p.strip()]
+            entries.extend(parts if len(parts) > 1 else [line])
+    return entries
+
+
+def _person_name_in(entry: str, patron_tokens: set[str]) -> str | None:
+    """The first real person name in a single entry -- validated against the
+    first-name reference list, with the school's own patron excluded."""
+    for m in _NAME_GROUP_RE.finditer(entry):
+        cand = _normalize_name_order(m.group(1).strip())
+        if cand and not _is_patron_name(cand, patron_tokens):
+            return cand
+    return None
+
+
+def _english_teacher_from_entries(soup: BeautifulSoup, patron_tokens: set[str]) -> str | None:
+    """The English teacher, read per-entry: find the entry that names the
+    English-subject keyword and take the person named in THAT entry. Because
+    each entry is one teacher, this reads "Bednarczyk Magdalena – język
+    angielski" (name-first) and "j. angielski: Anna Kowalska" (keyword-first)
+    correctly, and never binds "język angielski" to the next teacher listed
+    right after it (confirmed real failures: a Spanish teacher and an IT
+    teacher were being tagged as the English teacher)."""
+    for entry in _staff_entries(soup):
+        if _ENGLISH_KEYWORD_RE.search(entry):
+            name = _person_name_in(entry, patron_tokens)
+            if name:
+                return name
+    return None
+
+
 def _extract(html: str, url: str, school_name: str = "") -> dict:
     soup = BeautifulSoup(html, "html.parser")
+    # A <br> is a line break between staff entries; turn it into a real
+    # newline so run-together teacher lines separate into distinct entries.
+    for br in soup.find_all("br"):
+        br.replace_with("\n")
     # &nbsp; (U+00A0) and other unicode whitespace collapse to a plain
     # space -- otherwise it can end up embedded inside a captured name.
     text = re.sub(r"\s+", " ", soup.get_text(" "))
@@ -699,28 +761,25 @@ def _extract(html: str, url: str, school_name: str = "") -> dict:
     director_name = _earliest_valid_match(text, (DIRECTOR_RE, DIRECTOR_NAME_FIRST_RE, DIRECTOR_INSTITUTIONAL_RE))
     if director_name and _is_patron_name(director_name, patron_tokens):
         director_name = None
-    # Deliberately NOT _earliest_valid_match here -- English-teacher listings
-    # have the OPPOSITE ambiguity from director tables. A director table
-    # sandwiches one name between two role labels ("Szychlińska dyrektor
-    # Karpińska oddział przedszkolny"), where the earlier match is right.
-    # A subject listing instead reads "Język angielski mgr Name1 mgr Name2
-    # mgr Name3" -- a header followed by a LIST of names for that subject
-    # -- where the correct reading is keyword-first (the name right after
-    # the header), and "earliest match" would wrongly grab whichever name
-    # happened to trail the PREVIOUS subject's list instead (confirmed
-    # directly: this returned "Anna Czyszkowska-Okoń", a Polish-language
-    # teacher, instead of "Anna Arkuszewska-Wrona", the actual English
-    # teacher, right after the "Język angielski" header). Trying
-    # keyword-first before name-first/role-list, in a fixed order, reads
-    # this format correctly.
-    english_teacher_name = None
-    for pattern in (ENGLISH_TEACHER_RE, ENGLISH_TEACHER_NAME_FIRST_RE, ENGLISH_TEACHER_ROLE_LIST_RE):
-        match = pattern.search(text)
-        if match:
-            normalized = _normalize_name_order(match.group(1).strip())
-            if normalized and not _is_patron_name(normalized, patron_tokens):
-                english_teacher_name = normalized
-                break
+    # PRIMARY: read the English teacher per staff-entry (see
+    # _english_teacher_from_entries) so the subject binds to its own row's
+    # name, not the adjacent teacher's. This handles the dominant Polish
+    # layout "Name – subjects" (one teacher per row/line), which the old
+    # flattened keyword-first scan read wrong.
+    english_teacher_name = _english_teacher_from_entries(soup, patron_tokens)
+    # FALLBACK: the header-group layout ("Język angielski:" then a LIST of
+    # names in separate elements) has the keyword and names in DIFFERENT
+    # entries, so no single entry holds both. Only here is keyword-first on
+    # the flattened text the right reading -- and it runs only when the
+    # per-entry pass found nothing, so it can't override a correct match.
+    if english_teacher_name is None:
+        for pattern in (ENGLISH_TEACHER_RE, ENGLISH_TEACHER_NAME_FIRST_RE, ENGLISH_TEACHER_ROLE_LIST_RE):
+            match = pattern.search(text)
+            if match:
+                normalized = _normalize_name_order(match.group(1).strip())
+                if normalized and not _is_patron_name(normalized, patron_tokens):
+                    english_teacher_name = normalized
+                    break
 
     return {
         "director_name": director_name,
@@ -730,7 +789,14 @@ def _extract(html: str, url: str, school_name: str = "") -> dict:
         "source_url": url,
         "subpage_links": _find_subpage_links(soup, url, school_name),
         "email_cloak_detected": email_cloak_detected,
-        "specialties": _detect_specialties(text),
+        # Speciality is derived from the school's official NAME only (seeded
+        # in scrape_school_website), never from page body text. Scanning body
+        # text produced false positives: every Polish public site carries a
+        # mandatory accessibility declaration ("Deklaracja dostępności") that
+        # mentions niewidomi/słabowidzący/niesłyszący/niepełnosprawni about
+        # the WEBSITE, and Montessori/marketing copy trips specjaln/
+        # integracyjn -- none of which mean the school serves that population.
+        "specialties": set(),
         "js_app_shell": js_app_shell,
     }
 

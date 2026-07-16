@@ -139,9 +139,13 @@ def run_job(job_id: int) -> None:
                 # impairment"). Only ever set when something was found -- a
                 # run that turns up nothing never wipes a prior detection,
                 # same "blank beats a guess" discipline as every other field.
+                # Speciality is derived from the school's official NAME only
+                # now (name-based is deterministic), so always reflect it --
+                # including clearing a stale value that an earlier body-text
+                # scan wrongly set (e.g. a false "Visual impairment" picked up
+                # from a website accessibility declaration).
                 specialties = result.get("specialties") or []
-                if specialties:
-                    school.specialty = "; ".join(specialties)
+                school.specialty = "; ".join(specialties) if specialties else None
 
                 # A discovered_website_url is only ever set from a URL the
                 # crawler itself successfully fetched -- either the same
