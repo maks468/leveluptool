@@ -36,12 +36,13 @@ dataset, a few gated teammates, always on — independent of your PC.
      ```
      Add one `username  hash` line per teammate.
 
-4. **Start it** (from `/opt/levelup`):
+4. **Start it** (from `/opt/levelup`) — the `hosted` profile adds the public
+   Caddy front (HTTPS + login); without it you'd get the app on loopback only:
    ```bash
-   docker compose up -d --build
+   docker compose --profile hosted up -d --build
    ```
-   First build takes a few minutes (it installs Chromium). It auto-runs DB
-   migrations on start.
+   First build takes a few minutes (it installs Chromium). It restores the
+   seed and runs DB migrations on start.
 
 5. Open **https://YOUR-DOMAIN.example.com** and log in. Everyone shares the
    same data; changes are live for all.

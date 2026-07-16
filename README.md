@@ -28,6 +28,9 @@ import.
 ```bash
 docker compose up --build      # restores the seed, migrates, serves same-origin
 ```
+Then open **http://localhost:8322**. First build takes a few minutes (it
+installs Chromium for enrichment). That's the whole setup — the school
+library is already loaded.
 
 **Without Docker (local dev):**
 ```bash

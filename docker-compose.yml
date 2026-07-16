@@ -4,19 +4,24 @@ services:
     image: levelup-crm
     restart: unless-stopped
     environment:
-      # The DB path defaults to /app/data/levelup.db (see core/config.py),
-      # which is the persistent volume below -- no need to set it.
       # Same-origin serving makes CORS irrelevant; set your domain only if
       # you ever run the Vite dev server against this backend.
       LEVELUP_CORS_ORIGINS: "https://YOUR-DOMAIN.example.com"
     volumes:
-      - ./data:/app/data        # SQLite DB + enrichment cache + imports = your entire state
+      - ./data:/app/data        # SQLite DB + enrichment cache + imports (seed lives here too)
       - ./config:/app/config    # rubric weights, editable live
-    expose:
-      - "8322"                  # internal only -- Caddy is the public entrypoint
+    ports:
+      # Reachable at http://localhost:8322 on the machine running it. Bound to
+      # loopback so that on a public VM it is NOT exposed directly -- there,
+      # the "hosted" Caddy service below is the public entrypoint.
+      - "127.0.0.1:8322:8322"
 
+  # Public HTTPS + login gate, for hosting the app for a team on a server.
+  # Local play does NOT need this -- it only starts when you ask for it:
+  #   docker compose --profile hosted up -d --build
   caddy:
     image: caddy:2
+    profiles: ["hosted"]
     restart: unless-stopped
     depends_on:
       - app
@@ -25,7 +30,7 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data        # TLS certificates (persist across restarts)
+      - caddy_data:/data
       - caddy_config:/config
 
 volumes:
