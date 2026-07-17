@@ -93,6 +93,10 @@ export interface PipelineSchool extends School {
   stage: PipelineStage
   entered_pipeline_at: string
   stage_updated_at: string
+  /** Single best contact email for outreach (personal decision-maker, else office). */
+  best_email: string | null
+  /** How this school entered the pipeline (filter snapshot / "Manually selected"). */
+  pull_criteria: string | null
 }
 
 export interface QueueEntry extends PipelineSchool {

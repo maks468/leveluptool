@@ -174,6 +174,33 @@ def _compute_enrichment_levels(session: Session, school_ids: list[int]) -> dict[
     return levels
 
 
+def _compute_best_emails(session: Session, school_ids: list[int]) -> dict[int, str | None]:
+    """The single best contact email per school for an outreach campaign:
+    a decision-maker's OWN (personal-verified) address first -- director,
+    then English teacher -- otherwise the general office/secretariat mailbox.
+    None when no email was found at all. director/english_coordinator
+    contacts only ever carry a personal-verified address (see jobs.py), so
+    preferring them targets a real person; the general row is the reliable
+    fallback that always lands in the school's inbox."""
+    if not school_ids:
+        return {}
+    contacts = session.query(SchoolContact).filter(SchoolContact.school_id.in_(school_ids)).all()
+    by_school: dict[int, list[SchoolContact]] = {}
+    for c in contacts:
+        by_school.setdefault(c.school_id, []).append(c)
+
+    best: dict[int, str | None] = {}
+    for school_id in school_ids:
+        school_contacts = by_school.get(school_id, [])
+        chosen = None
+        for contact_type in ("director", "english_coordinator", "general"):
+            chosen = next((c.email for c in school_contacts if c.contact_type == contact_type and c.email), None)
+            if chosen:
+                break
+        best[school_id] = chosen
+    return best
+
+
 def _to_out(
     session: Session, school: School, score: SchoolScore | None, enrichment_level: str | None = None
 ) -> SchoolOut:

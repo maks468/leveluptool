@@ -20,7 +20,7 @@ import { PipelineFiltersBar, type PipelineFilterState, type PipelineFiltersSnaps
 import { PipelineBulkActionBar } from "./PipelineBulkActionBar"
 import { PipelineSavedViewsBar } from "./PipelineSavedViewsBar"
 
-const COLUMN_COUNT = 12
+const COLUMN_COUNT = 14
 
 const PAGE_SIZE = 100
 
@@ -302,6 +302,7 @@ export function PipelinePanel({
               />
               <th className="whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2">Director</th>
               <th className="whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2">English teacher</th>
+              <th className="whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2">Best email</th>
               <th className="whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2">Stage</th>
               <SortableHeader
                 label="Students"
@@ -332,6 +333,7 @@ export function PipelinePanel({
                 sortDirection={sortDirection}
                 onSort={handleSort}
               />
+              <th className="whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2">Added via</th>
               <th className="whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2">Change stage</th>
             </tr>
           </thead>
@@ -387,6 +389,19 @@ export function PipelinePanel({
                   <DataValueCell value={school.english_teacher_name} />
                 </td>
                 <td className="whitespace-nowrap border-r border-[var(--color-border)] px-3 py-1.5">
+                  {school.best_email ? (
+                    <a
+                      href={`mailto:${school.best_email}`}
+                      className="text-[var(--color-accent)] hover:underline"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {school.best_email}
+                    </a>
+                  ) : (
+                    <DataValueCell value={null} />
+                  )}
+                </td>
+                <td className="whitespace-nowrap border-r border-[var(--color-border)] px-3 py-1.5">
                   <StagePill stage={school.stage} />
                 </td>
                 <td className="whitespace-nowrap border-r border-[var(--color-border)] px-3 py-1.5">
@@ -403,6 +418,11 @@ export function PipelinePanel({
                 </td>
                 <td className="whitespace-nowrap border-r border-[var(--color-border)] px-3 py-1.5 text-[var(--color-text-muted)]">
                   {formatDate(school.stage_updated_at)}
+                </td>
+                <td className="border-r border-[var(--color-border)] px-3 py-1.5 text-xs text-[var(--color-text-muted)]">
+                  <span className="block max-w-[220px] truncate" title={school.pull_criteria ?? undefined}>
+                    {school.pull_criteria ?? "—"}
+                  </span>
                 </td>
                 <td className="whitespace-nowrap px-3 py-1.5">
                   <select

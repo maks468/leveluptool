@@ -10,7 +10,13 @@ from levelup.services.automation.hooks import on_stage_changed
 from levelup.services.pipeline.activity import log_activity
 
 
-def pull_into_pipeline(session: Session, school_ids: list[int], owner_id: int, actor_id: int) -> dict[str, int]:
+def pull_into_pipeline(
+    session: Session,
+    school_ids: list[int],
+    owner_id: int,
+    actor_id: int,
+    pull_criteria: str | None = None,
+) -> dict[str, int]:
     already = {
         row.school_id
         for row in session.query(PipelineState).filter(PipelineState.school_id.in_(school_ids)).all()
@@ -18,12 +24,20 @@ def pull_into_pipeline(session: Session, school_ids: list[int], owner_id: int, a
     new_ids = [sid for sid in school_ids if sid not in already]
 
     for school_id in new_ids:
-        session.add(PipelineState(school_id=school_id, owner_id=owner_id, stage=PipelineStage.NOT_CONTACTED))
+        session.add(
+            PipelineState(
+                school_id=school_id,
+                owner_id=owner_id,
+                stage=PipelineStage.NOT_CONTACTED,
+                pull_criteria=pull_criteria,
+            )
+        )
         log_activity(
             session,
             school_id=school_id,
             activity_type=ActivityType.PULLED_INTO_PIPELINE.value,
             actor_id=actor_id,
+            metadata={"pull_criteria": pull_criteria} if pull_criteria else {},
         )
     session.commit()
     return {"pulled_new": len(new_ids), "already_in_pipeline": len(already)}

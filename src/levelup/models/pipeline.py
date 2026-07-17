@@ -45,6 +45,11 @@ class PipelineState(Base):
     stage_updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     next_action_note: Mapped[str | None] = mapped_column(String, nullable=True)
     next_action_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # How this school entered the pipeline -- a human-readable snapshot of
+    # the pull criteria at the time ("Podkarpackie · score ≥ 60 · students
+    # ≥ 50 · top 50") or "Manually selected". Set once at pull, never updated,
+    # so you can always see WHY each school is here.
+    pull_criteria: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class ActivityLog(Base):

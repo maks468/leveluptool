@@ -117,6 +117,11 @@ class PipelineSchoolOut(SchoolOut):
     stage: str
     entered_pipeline_at: datetime
     stage_updated_at: datetime
+    # Single best contact email for outreach (decision-maker's personal
+    # address if known, else the office/secretariat mailbox).
+    best_email: str | None = None
+    # Human-readable snapshot of how this school entered the pipeline.
+    pull_criteria: str | None = None
 
     @field_serializer("entered_pipeline_at", "stage_updated_at")
     def _ser_dates(self, v: datetime) -> str:

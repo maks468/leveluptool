@@ -20,7 +20,7 @@ from levelup.api.v1.schemas import (
     SetFollowUpRequest,
     StageChangeRequest,
 )
-from levelup.api.v1.schools import _apply_filters, _compute_enrichment_levels, _to_out
+from levelup.api.v1.schools import _apply_filters, _compute_best_emails, _compute_enrichment_levels, _to_out
 from levelup.core.db import get_session
 from levelup.core.security import get_current_user
 from levelup.models.crm import SchoolTag
@@ -45,8 +45,54 @@ PIPELINE_SORTABLE_FIELDS = {
 }
 
 
+def _describe_pull_criteria(filters: dict, limit: int | None) -> str:
+    """A short, human-readable snapshot of a filter-based pull, e.g.
+    "PODKARPACKIE · score ≥ 60 · students ≥ 50 · top 50" -- stored on each
+    school so you can see WHY it's in the pipeline."""
+    parts: list[str] = []
+    if filters.get("voivodeship"):
+        parts.append(str(filters["voivodeship"]))
+    if filters.get("city"):
+        parts.append(str(filters["city"]))
+    school_type = filters.get("school_type")
+    if school_type and school_type != "all":
+        parts.append(str(school_type))
+
+    score_min, score_max = filters.get("score_min"), filters.get("score_max")
+    if score_min is not None and score_max is not None:
+        parts.append(f"score {score_min}–{score_max}")
+    elif score_min is not None:
+        parts.append(f"score ≥ {score_min}")
+    elif score_max is not None:
+        parts.append(f"score ≤ {score_max}")
+
+    st_min, st_max = filters.get("students_min"), filters.get("students_max")
+    if st_min is not None and st_max is not None:
+        parts.append(f"students {st_min}–{st_max}")
+    elif st_min is not None:
+        parts.append(f"students ≥ {st_min}")
+    elif st_max is not None:
+        parts.append(f"students ≤ {st_max}")
+
+    public, private = filters.get("ownership_public", True), filters.get("ownership_private", True)
+    if public and not private:
+        parts.append("public only")
+    elif private and not public:
+        parts.append("private only")
+    if filters.get("include_adult_education") is False:
+        parts.append("excl. adult-ed")
+    if limit is not None:
+        parts.append(f"top {limit}")
+
+    return " · ".join(parts) if parts else "All matching schools"
+
+
 def _pipeline_school_out(
-    session: Session, school: School, state: PipelineState, enrichment_level: str | None = None
+    session: Session,
+    school: School,
+    state: PipelineState,
+    enrichment_level: str | None = None,
+    best_email: str | None = None,
 ) -> PipelineSchoolOut:
     score = (
         session.query(SchoolScore)
@@ -60,6 +106,8 @@ def _pipeline_school_out(
         stage=state.stage.value,
         entered_pipeline_at=state.entered_pipeline_at,
         stage_updated_at=state.stage_updated_at,
+        best_email=best_email,
+        pull_criteria=state.pull_criteria,
     )
 
 
@@ -153,8 +201,13 @@ def list_pipeline(
         .all()
     }
 
-    enrichment_levels = _compute_enrichment_levels(session, [school.id for school, _ in rows])
-    results = [_pipeline_school_out(session, school, state, enrichment_levels.get(school.id)) for school, state in rows]
+    row_ids = [school.id for school, _ in rows]
+    enrichment_levels = _compute_enrichment_levels(session, row_ids)
+    best_emails = _compute_best_emails(session, row_ids)
+    results = [
+        _pipeline_school_out(session, school, state, enrichment_levels.get(school.id), best_emails.get(school.id))
+        for school, state in rows
+    ]
     return PipelineListOut(total=total, page=page, page_size=page_size, stage_counts=stage_counts, items=results)
 
 
@@ -350,6 +403,7 @@ def pull(
 ):
     if body.school_ids is not None:
         school_ids = body.school_ids
+        criteria = "Manually selected"
     elif body.filters is not None:
         query = _apply_filters(
             session.query(School.id).outerjoin(CurrentScore, CurrentScore.school_id == School.id).outerjoin(
@@ -361,10 +415,11 @@ def pull(
         if body.limit is not None:
             query = query.limit(body.limit)
         school_ids = [row[0] for row in query.all()]
+        criteria = _describe_pull_criteria(body.filters, body.limit)
     else:
         raise HTTPException(400, "Provide either school_ids or filters")
 
-    result = pull_into_pipeline(session, school_ids, owner_id=user.id, actor_id=user.id)
+    result = pull_into_pipeline(session, school_ids, owner_id=user.id, actor_id=user.id, pull_criteria=criteria)
     return PullIntoPipelineResult(**result)
 
 
