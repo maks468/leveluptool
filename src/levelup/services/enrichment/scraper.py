@@ -297,59 +297,42 @@ def _is_patron_name(candidate: str, patron_tokens: set[str]) -> bool:
     return bool(words) and all(w in patron_tokens for w in words)
 
 
-# Whether the school serves a specific special-education population, marked
-# during enrichment from the school's own site (and its official name,
-# which for special schools reliably says so). Each tuple is
-# (English label stored/shown, Polish phrasings that actually appear on
-# Polish school pages / in RSPO names). These specific disability markers
-# rarely mean anything else, so they're trusted in page body text as-is.
-_SPECIALTY_PATTERNS = tuple(
-    (label, re.compile(pattern))
-    for label, pattern in (
-        (
-            "Intellectual / developmental disability",
-            r"niepe[łl]nosprawno\w*\s+intelektualn|niepe[łl]nosprawni\w*\s+intelektualn"
-            r"|upo[śs]ledzeni\w*\s+umys[łl]ow|niepe[łl]nosprawno\w*\s+umys[łl]ow",
-        ),
-        ("Autism spectrum", r"autyz\w*|autystyczn\w*|zespo[łl]\w*\s+aspergera|aspergera"),
-        (
-            "Physical / motor disability",
-            r"niepe[łl]nosprawno\w*\s+ruchow|niepe[łl]nosprawni\w*\s+ruchow|narz[aą]d\w*\s+ruchu",
-        ),
-        ("Hearing impairment", r"nies[łl]ysz\w*|s[łl]abos[łl]ysz\w*|niedos[łl]ysz\w*|niedos[łl]uch\w*"),
-        ("Visual impairment", r"niewidom\w*|s[łl]abowidz\w*|niedowidz\w*"),
-        ("Integration classes", r"integracyjn\w*"),
-        ("Socio-therapy / youth care unit", r"socjoterap\w*|m[łl]odzie[żz]owy\s+o[śs]rodek"),
-    )
+# A school is tagged "Special-needs school" ONLY when its official name
+# marks it as a DEDICATED special-education institution -- not one that
+# merely accommodates disability. Deliberately EXCLUDES "z oddziałami
+# integracyjnymi" (a mainstream school WITH integration classes) and any
+# body-text mention of accommodation; only the authoritative RSPO name is
+# used. Matches (each is an explicit "made for that" marker):
+#   - "... specjalna / specjalny" as the institution type (szkoła/liceum/
+#     technikum/ośrodek specjalny). Negative lookahead drops "specjalność"
+#     (a course major) and "specjalnie" (adverb).
+#   - a special centre: ośrodek szkolno-wychowawczy (SOSW), ośrodek
+#     rewalidacyjno-wychowawczy (OREW), młodzieżowy ośrodek wychowawczy /
+#     socjoterapii (MOW/MOS).
+#   - a named disability population: for the deaf/blind/low-vision, autism,
+#     or (intellectual/other) disability -- these words appear in a school's
+#     name only when the school is dedicated to that population.
+_SPECIAL_SCHOOL_NAME_RE = re.compile(
+    r"\bspecjaln(?!o[śs]|ie)"  # specjalna/specjalny/specjalne(j) but NOT specjalność/specjalnie
+    r"|o[śs]rodek\s+(?:szkolno-?\s*wychowawcz|rewalidacyjno)"
+    r"|\bsosw\b|\borew\b"
+    r"|m[łl]odzie[żz]owy\s+o[śs]rodek\s+(?:wychowawcz|socjoterap)"
+    r"|nies[łl]ysz|s[łl]abos[łl]ysz|niedos[łl]ysz|niedos[łl]uch"
+    r"|niewidom|s[łl]abowidz|niedowidz"
+    r"|autyz|autystyczn|aspergera"
+    r"|niepe[łl]nosprawn|upo[śs]ledz"
 )
-
-# "Special-needs school" is the one label whose keyword ("specjaln") also
-# appears in innocent contexts -- "oferta specjalna" (special offer), a
-# technikum's "specjalność" (major), the adverb "specjalnie". In page BODY
-# text it's only trusted inside an explicit school/education phrasing; in
-# the school's OWN official NAME a bare "specjaln" is reliable (RSPO names
-# carry no marketing copy).
-_SPECIAL_SCHOOL_IN_TEXT = re.compile(
-    r"szko[łl]\w*\s+specjaln|specjaln\w*\s+o[śs]rodek|o[śs]rodek\s+szkolno-?\s*wychowawcz"
-    r"|kszta[łl]ceni\w*\s+specjaln|specjaln\w*\s+potrzeb\w*\s+edukacyjn|\bsosw\b"
-)
-_SPECIAL_SCHOOL_IN_NAME = re.compile(r"\bspecjaln|o[śs]rodek\s+szkolno-?\s*wychowawcz|\bsosw\b")
 
 
 def _detect_specialties(text: str, *, is_name: bool = False) -> set[str]:
-    """Labels for any special-education population the text indicates. Never
-    a guess: only explicit Polish phrasing fires it, and a school with none
-    stays blank like every other unknown field here. `is_name=True` widens
-    only the ambiguous "specjaln" marker to a bare match, safe against an
-    official name but not against free page text."""
+    """Returns {"Special-needs school"} only when the text is the official
+    NAME of a DEDICATED special-needs institution, else an empty set. Never
+    fires on body text (that produced accessibility-declaration false
+    positives) and never on "z oddziałami integracyjnymi" (integration
+    classes are accommodation, not a dedicated special school)."""
     if not text:
         return set()
-    low = text.lower()
-    found = {label for label, pattern in _SPECIALTY_PATTERNS if pattern.search(low)}
-    special_re = _SPECIAL_SCHOOL_IN_NAME if is_name else _SPECIAL_SCHOOL_IN_TEXT
-    if special_re.search(low):
-        found.add("Special-needs school")
-    return found
+    return {"Special-needs school"} if _SPECIAL_SCHOOL_NAME_RE.search(text.lower()) else set()
 
 
 # Same-site subpages worth following, ranked by how likely they are to

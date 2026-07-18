@@ -50,8 +50,18 @@ def _apply_filters(
     score_max: int | None = None,
     score_include_unscored: bool = True,
     include_adult_education: bool = True,
+    special_needs: str = "all",
 ):
     query = query.filter(School.is_active.is_(True))
+
+    # Dedicated special-needs institutions carry a non-null `specialty`
+    # (set from the official name -- see scraper._detect_specialties).
+    # "only" narrows to them; "exclude" hides them (the default for ordinary
+    # English-program outreach); "all" (default) applies no filter.
+    if special_needs == "only":
+        query = query.filter(School.specialty.isnot(None))
+    elif special_needs == "exclude":
+        query = query.filter(School.specialty.is_(None))
 
     if voivodeship:
         query = query.filter(School.voivodeship == voivodeship)
@@ -264,6 +274,7 @@ def list_schools(
     score_max: int | None = None,
     score_include_unscored: bool = True,
     include_adult_education: bool = True,
+    special_needs: str = "all",
     sort: str = "score:desc",
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
@@ -285,6 +296,7 @@ def list_schools(
         score_max=score_max,
         score_include_unscored=score_include_unscored,
         include_adult_education=include_adult_education,
+        special_needs=special_needs,
     )
 
     total = query.count()
@@ -334,6 +346,7 @@ def count_schools(
     score_max: int | None = None,
     score_include_unscored: bool = True,
     include_adult_education: bool = True,
+    special_needs: str = "all",
 ):
     query = _apply_filters(
         _base_query(session).with_entities(School.id),
@@ -351,6 +364,7 @@ def count_schools(
         score_max=score_max,
         score_include_unscored=score_include_unscored,
         include_adult_education=include_adult_education,
+        special_needs=special_needs,
     )
     return {"count": query.count()}
 
@@ -372,6 +386,7 @@ def export_schools_csv(
     score_max: int | None = None,
     score_include_unscored: bool = True,
     include_adult_education: bool = True,
+    special_needs: str = "all",
     sort: str = "score:desc",
 ):
     """CSV export of a filtered Library segment -- for handing a batch to a
@@ -393,6 +408,7 @@ def export_schools_csv(
         score_max=score_max,
         score_include_unscored=score_include_unscored,
         include_adult_education=include_adult_education,
+        special_needs=special_needs,
     )
     field_name, _, direction = sort.partition(":")
     sort_col = SORTABLE_FIELDS.get(field_name, SchoolScore.total_score)

@@ -22,6 +22,7 @@ export function filtersToParams(filters: LibraryFilters): Record<string, string>
   if (filters.score_max !== null) params.score_max = String(filters.score_max)
   params.score_include_unscored = String(filters.score_include_unscored)
   params.include_adult_education = String(filters.include_adult_education)
+  params.special_needs = filters.special_needs
   return params
 }
 
@@ -46,6 +47,7 @@ export function filtersToApiBody(filters: LibraryFilters): Record<string, unknow
   if (filters.score_max !== null) body.score_max = filters.score_max
   body.score_include_unscored = filters.score_include_unscored
   body.include_adult_education = filters.include_adult_education
+  body.special_needs = filters.special_needs
   return body
 }
 

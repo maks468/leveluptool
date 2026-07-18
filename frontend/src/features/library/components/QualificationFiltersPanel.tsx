@@ -12,6 +12,12 @@ const SCHOOL_TYPE_OPTIONS = [
   { value: "vocational", label: "Vocational (branżowa I/II + policealna)" },
 ] as const
 
+const SPECIAL_NEEDS_OPTIONS = [
+  { value: "all", label: "Include all schools" },
+  { value: "only", label: "Only special-needs schools" },
+  { value: "exclude", label: "Exclude special-needs schools" },
+] as const
+
 function Select({
   label,
   value,
@@ -100,6 +106,13 @@ export function QualificationFiltersPanel() {
       </label>
 
       <OwnershipFilter />
+
+      <Select
+        label="Special-needs schools"
+        value={filters.special_needs}
+        onChange={(v) => set("special_needs", v as typeof filters.special_needs)}
+        options={SPECIAL_NEEDS_OPTIONS}
+      />
 
       <div>
         <label className="mb-1 block text-xs font-medium text-[var(--color-text-muted)]">Students</label>

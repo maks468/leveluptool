@@ -81,6 +81,11 @@ def _describe_pull_criteria(filters: dict, limit: int | None) -> str:
         parts.append("private only")
     if filters.get("include_adult_education") is False:
         parts.append("excl. adult-ed")
+    special_needs = filters.get("special_needs")
+    if special_needs == "only":
+        parts.append("special-needs only")
+    elif special_needs == "exclude":
+        parts.append("excl. special-needs")
     if limit is not None:
         parts.append(f"top {limit}")
 

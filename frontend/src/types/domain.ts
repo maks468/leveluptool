@@ -295,7 +295,11 @@ export interface LibraryFilters {
   score_max: number | null
   score_include_unscored: boolean
   include_adult_education: boolean
+  /** Dedicated special-needs institutions: show all, only them, or exclude them. */
+  special_needs: SpecialNeedsFilter
 }
+
+export type SpecialNeedsFilter = "all" | "only" | "exclude"
 
 export type SavedViewScope = "library" | "pipeline"
 
@@ -344,4 +348,5 @@ export const DEFAULT_LIBRARY_FILTERS: LibraryFilters = {
   score_max: null,
   score_include_unscored: true,
   include_adult_education: true,
+  special_needs: "all",
 }
