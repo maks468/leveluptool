@@ -63,7 +63,7 @@ function QueueRow({ entry, rank, onOpen }: { entry: QueueEntry; rank: number; on
         onClick={() => onOpen(entry.id)}
         title={entry.name}
       >
-        <div className="truncate text-sm font-medium hover:underline">{shortenSchoolName(entry.name, entry.city)}</div>
+        <div className="truncate text-sm font-medium hover:underline">{shortenSchoolName(entry.name, entry.city, entry.name_disambiguator)}</div>
         <div className={cn("mt-0.5 text-xs font-medium", TONE_TEXT[tone])}>{entry.queue_reason}</div>
       </button>
 

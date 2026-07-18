@@ -88,6 +88,14 @@ class School(Base):
     # RSPO columns). None = nothing indicating a speciality was found.
     specialty: Mapped[str | None] = mapped_column(String, nullable=True)
 
+    # Set ONLY for schools whose official name + city is NOT unique (e.g. the
+    # several "BRANŻOWA SZKOŁA I STOPNIA W RADOMIU", each in a different
+    # Zespół). Holds the extra bit that makes the display name unique -- the
+    # parent complex (Zespół), or an "RSPO <id>" fallback when the complex
+    # can't tell them apart. NULL for the ~99% whose name+city is already
+    # unique. Recomputed by scripts/backfill_name_disambiguators.py.
+    name_disambiguator: Mapped[str | None] = mapped_column(String, nullable=True)
+
     # From RSPO's own detail API (hqAddressGeotag) -- fetched lazily, only
     # for schools that actually need plotting (pipeline schools), not
     # backfilled for the whole 25k-school registry up front.

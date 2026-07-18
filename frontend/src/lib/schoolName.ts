@@ -78,7 +78,11 @@ const TYPE_ABBREVIATIONS: [RegExp, string][] = [
  * (leave it) from "no location present" (append ", City"). */
 const TRAILING_LOCATIVE_RE = /\s+we?\s+\p{L}[\p{L}-]*(?:\s+[\p{L}-]+)*$/iu
 
-export function shortenSchoolName(name: string, city: string | null): string {
+export function shortenSchoolName(
+  name: string,
+  city: string | null,
+  disambiguator?: string | null,
+): string {
   const stripped = stripTrailingCityClause(name, city)
   const strippedCity = stripped !== name
   let result = toDisplayCase(stripped)
@@ -100,6 +104,12 @@ export function shortenSchoolName(name: string, city: string | null): string {
     if (!cityInlineAlready && !cityExactPresent) {
       result = `${result}, ${cityDisplay}`
     }
+  }
+  // For the rare schools whose name+city still isn't unique, append the
+  // server-computed disambiguator (parent complex, or an "RSPO <id>"
+  // fallback) so every displayed name is distinct.
+  if (disambiguator && disambiguator.trim()) {
+    result = `${result} — ${disambiguator.trim()}`
   }
   return result
 }

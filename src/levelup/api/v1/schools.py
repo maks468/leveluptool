@@ -238,6 +238,7 @@ def _to_out(
             "director_name": school.director_name,
             "english_teacher_name": school.english_teacher_name,
             "specialty": school.specialty,
+            "name_disambiguator": school.name_disambiguator,
             "enrichment_level": enrichment_level,
             "is_active": school.is_active,
             "in_pipeline": pipeline_state is not None,

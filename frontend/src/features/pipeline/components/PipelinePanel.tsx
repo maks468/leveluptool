@@ -372,7 +372,7 @@ export function PipelinePanel({
                   title={school.name}
                   onClick={() => setSelectedId(school.id)}
                 >
-                  {shortenSchoolName(school.name, school.city)}
+                  {shortenSchoolName(school.name, school.city, school.name_disambiguator)}
                   {school.specialty && (
                     <Badge color="purple" className="ml-2" title={school.specialty}>
                       {school.specialty}

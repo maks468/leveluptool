@@ -80,6 +80,9 @@ export interface School {
   director_name: string | null
   english_teacher_name: string | null
   specialty: string | null
+  /** Extra bit that makes a non-unique "name, city" unique (parent complex,
+   * or an "RSPO <id>" fallback). Null when name+city is already unique. */
+  name_disambiguator: string | null
   enrichment_level: EnrichmentLevel
   is_active: boolean
   in_pipeline: boolean

@@ -55,6 +55,7 @@ class SchoolOut(BaseModel):
     director_name: str | None
     english_teacher_name: str | None
     specialty: str | None
+    name_disambiguator: str | None
     enrichment_level: str
     is_active: bool
     in_pipeline: bool

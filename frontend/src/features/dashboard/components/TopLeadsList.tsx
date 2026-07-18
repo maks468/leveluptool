@@ -40,7 +40,7 @@ export function TopLeadsList({ schools }: { schools: School[] }) {
                 onClick={() => setSelectedId(school.id)}
                 title={school.name}
               >
-                {shortenSchoolName(school.name, school.city)}
+                {shortenSchoolName(school.name, school.city, school.name_disambiguator)}
               </button>
               <span className="flex-shrink-0 text-xs text-[var(--color-text-muted)]">
                 <DataValueCell value={school.city} />

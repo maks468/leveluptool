@@ -182,7 +182,7 @@ export function LibraryResultsTable() {
                   <input type="checkbox" checked={selectedIds.has(school.id)} onChange={() => toggle(school.id)} />
                 </td>
                 <td className="px-3 py-2 font-medium" title={school.name}>
-                  {shortenSchoolName(school.name, school.city)}
+                  {shortenSchoolName(school.name, school.city, school.name_disambiguator)}
                   {school.in_pipeline && (
                     <Badge color="indigo" className="ml-2">
                       In pipeline
