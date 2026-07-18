@@ -72,11 +72,34 @@ const TYPE_ABBREVIATIONS: [RegExp, string][] = [
   [/Branżowa Szkoła II Stopnia/i, "Szkoła Branżowa II"],
 ]
 
+/** A trailing " w/we <Word...>" clause -- in a Polish school name this is
+ * almost always the city in its locative (inflected) form, e.g. "w Nowej
+ * Wsi", "we Wrocławiu". Used to tell "the city is already in the name"
+ * (leave it) from "no location present" (append ", City"). */
+const TRAILING_LOCATIVE_RE = /\s+we?\s+\p{L}[\p{L}-]*(?:\s+[\p{L}-]+)*$/iu
+
 export function shortenSchoolName(name: string, city: string | null): string {
-  let result = stripTrailingCityClause(name, city)
-  result = toDisplayCase(result)
+  const stripped = stripTrailingCityClause(name, city)
+  const strippedCity = stripped !== name
+  let result = toDisplayCase(stripped)
   for (const [pattern, replacement] of TYPE_ABBREVIATIONS) {
     result = result.replace(pattern, replacement)
+  }
+  // Consistent "<name>, <City>" shape for EVERY school -- re-appending the
+  // city is what keeps the many un-numbered "SZKOŁA PODSTAWOWA W <village>"
+  // (whose only distinguisher IS the city) from all collapsing to a bare
+  // "SP" / "Publiczna SP". We append UNLESS the city is already in the name:
+  // either as an exact match, or as a trailing locative clause we couldn't
+  // confidently strip (e.g. "w Nowej Wsi" for city "Nowa Wieś") -- appending
+  // there would print the city twice. Uniqueness for the rare true
+  // duplicates that share name AND city is handled server-side.
+  if (city && city.trim()) {
+    const cityDisplay = toDisplayCase(city.trim())
+    const cityInlineAlready = !strippedCity && TRAILING_LOCATIVE_RE.test(result)
+    const cityExactPresent = stripDiacritics(result).includes(stripDiacritics(cityDisplay))
+    if (!cityInlineAlready && !cityExactPresent) {
+      result = `${result}, ${cityDisplay}`
+    }
   }
   return result
 }
