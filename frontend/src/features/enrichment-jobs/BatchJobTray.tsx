@@ -1,7 +1,10 @@
 import { useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { Loader2, X, ChevronUp, ChevronDown } from "lucide-react"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
+import { Loader2, X, ChevronUp, ChevronDown, Square } from "lucide-react"
 import { useRecentEnrichmentJobs } from "./useEnrichmentJobs"
+import { cancelEnrichmentJob } from "@/api/enrichment"
+import { queryKeys } from "@/api/queryKeys"
 import { shortenSchoolName } from "@/lib/schoolName"
 import { cn } from "@/lib/utils"
 
@@ -12,6 +15,12 @@ export function BatchJobTray() {
   const [expanded, setExpanded] = useState(false)
   const [dismissedIds, setDismissedIds] = useState<Set<number>>(new Set())
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
+
+  const cancelMutation = useMutation({
+    mutationFn: cancelEnrichmentJob,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.enrichmentJobs() }),
+  })
 
   const cutoff = Date.now() - RECENT_WINDOW_MS
   const jobs = allJobs.filter(
@@ -23,9 +32,16 @@ export function BatchJobTray() {
   if (jobs.length === 0) return null
 
   const totalItems = jobs.flatMap((j) => j.items)
-  const done = totalItems.filter((i) => i.status === "success" || i.status === "failed").length
+  const done = totalItems.filter((i) => i.status === "success" || i.status === "failed" || i.status === "cancelled").length
   const failed = totalItems.filter((i) => i.status === "failed").length
-  const allDone = jobs.every((j) => j.status === "done")
+  const allDone = jobs.every((j) => j.status === "done" || j.status === "cancelled")
+  const activeJobs = jobs.filter((j) => (j.status === "pending" || j.status === "running") && !j.cancel_requested)
+  const stopping = jobs.some((j) => j.cancel_requested && (j.status === "pending" || j.status === "running"))
+  const anyCancelled = jobs.some((j) => j.status === "cancelled")
+
+  function stopAll() {
+    activeJobs.forEach((j) => cancelMutation.mutate(j.id))
+  }
 
   return (
     <div className="fixed bottom-4 left-4 z-50 w-80 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] shadow-lg">
@@ -37,9 +53,11 @@ export function BatchJobTray() {
           {!allDone && <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" />}
           {allDone ? (
             <span>
-              Enriched {done - failed} of {totalItems.length}
+              {anyCancelled ? "Stopped" : "Enriched"} {done - failed} of {totalItems.length}
               {failed > 0 && ` — ${failed} failed`}
             </span>
+          ) : stopping ? (
+            <span>Stopping&hellip; {done}/{totalItems.length} done</span>
           ) : (
             <span>
               Enriching schools&hellip; {done}/{totalItems.length} done
@@ -47,6 +65,19 @@ export function BatchJobTray() {
           )}
         </div>
         <div className="flex items-center gap-1">
+          {!allDone && !stopping && (
+            <button
+              type="button"
+              title="Stop enrichment"
+              className="rounded p-0.5 text-[var(--color-text-muted)] hover:bg-[var(--color-border)] hover:text-[var(--color-text)]"
+              onClick={(e) => {
+                e.stopPropagation()
+                stopAll()
+              }}
+            >
+              <Square className="h-3.5 w-3.5 fill-current" />
+            </button>
+          )}
           {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
           {allDone && (
             <X
@@ -69,7 +100,19 @@ export function BatchJobTray() {
         <div className="max-h-64 overflow-y-auto border-t border-[var(--color-border)] p-2 text-xs">
           {jobs.map((job) => (
             <div key={job.id} className="mb-2">
-              <div className="mb-1 font-medium text-[var(--color-text-muted)]">Job #{job.id}</div>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span className="font-medium text-[var(--color-text-muted)]">Job #{job.id}</span>
+                {(job.status === "pending" || job.status === "running") && (
+                  <button
+                    type="button"
+                    className="text-[var(--color-text-muted)] hover:text-[var(--color-text)] disabled:opacity-50"
+                    disabled={job.cancel_requested}
+                    onClick={() => cancelMutation.mutate(job.id)}
+                  >
+                    {job.cancel_requested ? "stopping…" : "stop"}
+                  </button>
+                )}
+              </div>
               {job.items.map((item) => (
                 <div key={item.school_id} className="flex items-center justify-between gap-2 py-0.5">
                   <button
@@ -85,6 +128,7 @@ export function BatchJobTray() {
                       "flex-shrink-0",
                       item.status === "success" && "text-green-600",
                       item.status === "failed" && "text-red-600",
+                      item.status === "cancelled" && "text-[var(--color-text-muted)] italic",
                       (item.status === "pending" || item.status === "running") && "text-[var(--color-text-muted)]"
                     )}
                   >

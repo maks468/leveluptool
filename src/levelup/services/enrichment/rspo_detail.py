@@ -85,6 +85,19 @@ def parse_director_and_contacts(detail: dict) -> dict:
 
     geotag = detail.get("hqAddressGeotag") or {}
 
+    # RSPO's own "specificity" field is the government's own official
+    # classification of a DEDICATED special-education institution --
+    # authoritative, not a name-pattern guess. Confirmed directly: several
+    # schools whose own name gives no hint at all in the usual places
+    # (e.g. "PUBLICZNA SZKOŁA PODSTAWOWA PRZY ZAKŁADACH OPIEKI
+    # ZDROWOTNEJ" -- no "specjalna", no disability keyword anywhere) still
+    # carry `{"id": 1, "name": "specjalna"}` here, while an ordinary
+    # school's is `{"id": 100, "name": "brak specyfiki"}` ("no
+    # specificity"). Checked by name (not the id) since that's what
+    # RSPO's own API actually documents as the meaningful value.
+    specificity = (detail.get("specificity") or {}).get("name")
+    is_dedicated_special_needs = (specificity or "").strip().lower() == "specjalna"
+
     return {
         "director_name": director_name,
         "teaches_english": teaches_english,
@@ -94,6 +107,7 @@ def parse_director_and_contacts(detail: dict) -> dict:
         "website": detail.get("website") or None,
         "authority_name": authority_name,
         "authority_type": authority_type,
+        "is_dedicated_special_needs": is_dedicated_special_needs,
         "latitude": geotag.get("latitude"),
         "longitude": geotag.get("longitude"),
     }

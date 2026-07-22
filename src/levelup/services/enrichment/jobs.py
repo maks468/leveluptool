@@ -8,10 +8,14 @@ from datetime import datetime, timezone
 
 from levelup.core.db import SessionLocal
 from levelup.models.enrichment import EnrichmentJob, EnrichmentJobItem, SchoolContact
-from levelup.models.pipeline import ActivityType
+from levelup.models.pipeline import ActivityType, PipelineState, PipelineStage
 from levelup.models.school import School
 from levelup.services.enrichment.rspo_detail import fetch_rspo_detail, parse_director_and_contacts
-from levelup.services.enrichment.scraper import scrape_school_website
+from levelup.services.enrichment.scraper import (
+    augment_with_web_search,
+    finalize_scrape_result,
+    scrape_school_website,
+)
 from levelup.services.enrichment.verifier import (
     campaign_email_tier,
     classify_contact_quality,
@@ -20,6 +24,7 @@ from levelup.services.enrichment.verifier import (
     is_personal_email_for,
 )
 from levelup.services.pipeline.activity import log_activity
+from levelup.services.pipeline.stages import change_stage
 
 RSPO_SOURCE_URL_PREFIX = "https://rspo.gov.pl/api/Institution/"
 
@@ -74,6 +79,64 @@ def _upsert_contact(
         )
 
 
+def _would_be_enriched(director_name: str | None, teacher_name: str | None, result: dict, rspo_info: dict) -> bool:
+    """True when RSPO's own registry plus the school's own website crawl
+    already leave this school better than "not_enriched" (see
+    schools.py's _compute_enrichment_levels), so a web search would be
+    pure waste. Mirrors that function's own conditions exactly:
+    - "partial"/"successful" both require the English teacher's name --
+      already covered by the `teacher_name` check alone.
+    - "basic" requires the director's name AND some school email on
+      file -- checked here against the same non-school-email filter
+      (RODO/vendor addresses) the real contact-building step below
+      applies, so a discarded address can't be mistaken for a real one.
+    - A priority (personal-verified) email on the director implies both
+      a name AND an email are present, which the checks above already
+      require -- there's no path to "successful" this function would miss.
+    Deliberately conservative: search only ever runs when this is False,
+    i.e. only as an actual last resort, never as a first attempt and
+    never just to fill in one remaining field on an already-useful entry."""
+    if teacher_name:
+        return True
+    if not director_name:
+        return False
+    candidates = [*result.get("all_emails", []), rspo_info.get("email")]
+    return any(c and not is_non_school_email(c) for c in candidates)
+
+
+def reap_orphaned_jobs(session) -> int:
+    """Call once, at process startup. run_job executes as a FastAPI
+    BackgroundTask -- in-process only, so it does NOT survive a redeploy,
+    a crash, or a manual container restart. A job/item still marked
+    pending/running from a PREVIOUS process is therefore guaranteed
+    orphaned: there is no live loop left anywhere that could ever move it
+    forward, and (confirmed directly, after this exact scenario happened
+    from restarting mid-run while building this feature) it would
+    otherwise sit "running" forever -- including forever blocking the
+    Stop button's own "Stopping..." indicator, since that reads job
+    status too. Swept into "cancelled" the same terminal state an
+    explicit Stop produces, since from the schools' point of view it's
+    the same outcome: some were finished, the rest weren't reached."""
+    stuck_jobs = session.query(EnrichmentJob).filter(EnrichmentJob.status.in_(["pending", "running"])).all()
+    if not stuck_jobs:
+        return 0
+    stuck_job_ids = [j.id for j in stuck_jobs]
+    for job in stuck_jobs:
+        job.status = "cancelled"
+        job.cancel_requested = True
+    stuck_items = (
+        session.query(EnrichmentJobItem)
+        .filter(EnrichmentJobItem.job_id.in_(stuck_job_ids))
+        .filter(EnrichmentJobItem.status.in_(["pending", "running"]))
+        .all()
+    )
+    for item in stuck_items:
+        item.status = "cancelled"
+        item.finished_at = item.finished_at or datetime.now(timezone.utc)
+    session.commit()
+    return len(stuck_jobs)
+
+
 def create_job(session, school_ids: list[int], requested_by: int, is_automatic: bool = False) -> EnrichmentJob:
     job = EnrichmentJob(requested_by=requested_by, status="pending", is_automatic=is_automatic)
     session.add(job)
@@ -95,7 +158,20 @@ def run_job(job_id: int) -> None:
         session.commit()
 
         items = session.query(EnrichmentJobItem).filter_by(job_id=job_id).all()
+        cancelled = False
         for item in items:
+            # Checked fresh before every school (not just once at the top of
+            # run_job) -- the Stop button commits cancel_requested from a
+            # SEPARATE request/session while this loop is mid-run, so this
+            # session's own in-memory `job` needs an explicit refresh to see
+            # it. The school currently mid-scrape always finishes rather
+            # than being killed outright; everything still "pending" is
+            # skipped instead of started.
+            session.refresh(job)
+            if job.cancel_requested:
+                cancelled = True
+                break
+
             item.status = "running"
             item.started_at = datetime.now(timezone.utc)
             session.commit()
@@ -118,10 +194,46 @@ def run_job(job_id: int) -> None:
                 # teacher's name, so the website is still crawled regardless,
                 # but a director name found here always wins over a scraped one.
                 rspo_info: dict = {}
+                detail = None
                 if school.rspo_id:
                     detail = fetch_rspo_detail(school.rspo_id)
                     if detail:
                         rspo_info = parse_director_and_contacts(detail)
+
+                # RSPO's own registry is the authoritative record of whether
+                # an institution still operates at all -- confirmed
+                # directly: a school re-registered under a NEW rspo_id kept
+                # its OLD registration imported and marked active, showing
+                # up in the Library/Pipeline as a seemingly-blank duplicate
+                # of the real, live school (same name/city/address, zero
+                # contacts, no website). There's no site worth crawling for
+                # something RSPO itself has recorded as closed.
+                if detail and detail.get("liquidationDate"):
+                    school.is_active = False
+                    # is_active alone only hides it from the Library --
+                    # the Pipeline listing deliberately never filters by
+                    # is_active (an already-pulled entry is meant to stay
+                    # visible until YOU move it, not vanish silently), so a
+                    # school already pulled in before this was detected
+                    # would otherwise sit there forever showing blank
+                    # contact info with no indication why. Moving it to
+                    # Lost is the same "closed, nothing more to pursue"
+                    # signal a human would give it by hand. Skipped if
+                    # already Lost/Won so re-enrichment doesn't spam the
+                    # activity log with a no-op stage change every time.
+                    pipeline_state = session.query(PipelineState).filter_by(school_id=school.id).one_or_none()
+                    if pipeline_state and pipeline_state.stage not in (PipelineStage.WON, PipelineStage.LOST):
+                        change_stage(session, school.id, PipelineStage.LOST, actor_id=job.requested_by)
+                    log_activity(
+                        session,
+                        school_id=school.id,
+                        activity_type=ActivityType.ENRICHMENT_COMPLETED.value,
+                        metadata={"school_closed": True, "liquidation_date": detail.get("liquidationDate")},
+                    )
+                    item.status = "success"
+                    item.finished_at = datetime.now(timezone.utc)
+                    session.commit()
+                    continue
 
                 # FLOOR, step 1 -- make sure there's a site to crawl at all.
                 # RSPO records a website for nearly every school, so when our
@@ -132,19 +244,32 @@ def run_job(job_id: int) -> None:
                 if not school.website_url and rspo_info.get("website"):
                     school.website_url = rspo_info.get("website")
 
-                result = scrape_school_website(school.name, school.city, effective_website)
+                result = scrape_school_website(
+                    school.name, effective_website, rspo_email=rspo_info.get("email")
+                )
 
-                # Special-education population(s) detected from the site and
-                # the school's own name (e.g. "Special-needs school; Visual
-                # impairment"). Only ever set when something was found -- a
-                # run that turns up nothing never wipes a prior detection,
-                # same "blank beats a guess" discipline as every other field.
-                # Speciality is derived from the school's official NAME only
-                # now (name-based is deterministic), so always reflect it --
-                # including clearing a stale value that an earlier body-text
-                # scan wrongly set (e.g. a false "Visual impairment" picked up
-                # from a website accessibility declaration).
-                specialties = result.get("specialties") or []
+                # Special-education population(s) detected from the site,
+                # the school's own name, AND RSPO's own authoritative
+                # "specificity" field (see rspo_detail.py) -- a school run
+                # inside a healthcare or rehabilitation facility routinely
+                # carries NO naming hint at all ("PUBLICZNA SZKOŁA
+                # PODSTAWOWA PRZY ZAKŁADACH OPIEKI ZDROWOTNEJ" has no
+                # "specjalna", no disability keyword, nothing the
+                # name-pattern regex alone can catch), while RSPO's own
+                # registry still classifies it "specjalna" directly --
+                # confirmed directly against real schools a user found
+                # were never tagged despite being genuinely dedicated
+                # special-needs institutions. Only ever set when something
+                # was found -- a run that turns up nothing never wipes a
+                # prior detection, same "blank beats a guess" discipline
+                # as every other field. Sorted here (rather than waiting
+                # for finalize_scrape_result below) since it's already
+                # final either way -- a web search never adds to
+                # specialties, only to director/teacher/email fields.
+                specialties = set(result.get("specialties") or [])
+                if rspo_info.get("is_dedicated_special_needs"):
+                    specialties.add("Special-needs school")
+                specialties = sorted(specialties)
                 school.specialty = "; ".join(specialties) if specialties else None
 
                 # A discovered_website_url is only ever set from a URL the
@@ -160,6 +285,22 @@ def run_job(job_id: int) -> None:
                     school.website_url = discovered_url
 
                 director_name = rspo_info.get("director_name") or result.get("director_name")
+
+                # LAST RESORT -- a web search only ever runs once RSPO's own
+                # registry plus the full website crawl above still leave this
+                # school no better than "not_enriched" (see
+                # _would_be_enriched). A school that already has enough to be
+                # "basic"/"partial"/"successful" never triggers a single
+                # search request, even if one specific field (say, the
+                # English teacher) is still missing -- confirmed this is
+                # what was wanted: search is for genuinely stuck schools,
+                # not a way to top up an already-useful entry.
+                if not _would_be_enriched(director_name, result.get("english_teacher_name"), result, rspo_info):
+                    augment_with_web_search(school.name, school.city, result, rspo_id=school.rspo_id)
+                    director_name = rspo_info.get("director_name") or result.get("director_name")
+
+                finalize_scrape_result(result)
+
                 director_from_rspo = bool(rspo_info.get("director_name"))
                 director_source_url = (
                     f"{RSPO_SOURCE_URL_PREFIX}{school.rspo_id}" if director_from_rspo else result.get("source_url")
@@ -314,7 +455,29 @@ def run_job(job_id: int) -> None:
             item.finished_at = datetime.now(timezone.utc)
             session.commit()
 
-        job.status = "done"
+        if cancelled:
+            # Only "pending" items are stopped short -- one already marked
+            # "running" above always runs to completion first, so no
+            # half-written school data is ever left behind by a Stop click.
+            for item in items:
+                if item.status == "pending":
+                    item.status = "cancelled"
+            job.status = "cancelled"
+        else:
+            job.status = "done"
         session.commit()
     finally:
         session.close()
+
+
+def cancel_job(session, job_id: int) -> EnrichmentJob:
+    """Flags a running/pending job to stop before its next school -- the
+    background run_job loop (a separate DB session, since it runs via
+    FastAPI BackgroundTasks) checks this flag itself and reacts. A job
+    that's already done/cancelled is left alone rather than erroring, so
+    a double-click or a stale tray never surfaces a confusing failure."""
+    job = session.query(EnrichmentJob).filter_by(id=job_id).one()
+    if job.status in ("pending", "running"):
+        job.cancel_requested = True
+        session.commit()
+    return job

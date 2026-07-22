@@ -30,3 +30,9 @@ export async function listRecentJobs(): Promise<EnrichmentJob[]> {
 export async function getJob(id: number): Promise<EnrichmentJob> {
   return api.get<EnrichmentJob>(`/enrichment-jobs/${id}`)
 }
+
+/** Stops a pending/running job before its next school -- the one already
+ * mid-scrape still finishes, everything after it is skipped. */
+export async function cancelEnrichmentJob(id: number): Promise<EnrichmentJob> {
+  return api.post<EnrichmentJob>(`/enrichment-jobs/${id}/cancel`, {})
+}

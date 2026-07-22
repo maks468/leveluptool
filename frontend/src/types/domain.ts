@@ -271,15 +271,16 @@ export interface EnrichmentJobItem {
   school_id: number
   school_name: string
   school_city: string | null
-  status: "pending" | "running" | "success" | "failed"
+  status: "pending" | "running" | "success" | "failed" | "cancelled"
   error_message: string | null
 }
 
 export interface EnrichmentJob {
   id: number
-  status: "pending" | "running" | "done"
+  status: "pending" | "running" | "done" | "cancelled"
   requested_at: string
   is_automatic: boolean
+  cancel_requested: boolean
   items: EnrichmentJobItem[]
 }
 

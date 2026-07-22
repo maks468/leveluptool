@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import csv
+import io
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
@@ -116,9 +119,26 @@ def _pipeline_school_out(
     )
 
 
+def _filter_ids_by_enrichment_level(session: Session, school_ids: list[int], enrichment_level: str) -> list[int]:
+    """enrichment_level isn't a column -- it's computed from SchoolContact
+    rows (see _compute_enrichment_levels), so it can't be pushed down as a
+    plain SQL WHERE like every other pipeline filter. Instead: compute it
+    for every id the OTHER filters already matched (the pipeline is a
+    bounded, actively-worked set -- hundreds to low thousands of schools,
+    not the whole 25k-school library -- so this is cheap), then keep only
+    the ids at the requested level. Called BEFORE pagination so the total
+    count and page slicing are both correct for the filtered set, not the
+    unfiltered one."""
+    if not school_ids:
+        return []
+    levels = _compute_enrichment_levels(session, school_ids)
+    return [sid for sid in school_ids if levels.get(sid, "not_enriched") == enrichment_level]
+
+
 def _apply_pipeline_filters(
     query,
     *,
+    session: Session,
     stage: str | None = None,
     q: str | None = None,
     voivodeship: str | None = None,
@@ -127,6 +147,7 @@ def _apply_pipeline_filters(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
+    enrichment_level: str | None = None,
 ):
     """The pipeline's own filter set (distinct from the Library's
     _apply_filters): assumes the query is already joined to PipelineState.
@@ -154,6 +175,10 @@ def _apply_pipeline_filters(
         if score_include_unscored:
             conditions.append(SchoolScore.total_score.is_(None))
         query = query.filter(or_(*conditions))
+    if enrichment_level:
+        candidate_ids = [row[0] for row in query.with_entities(School.id).all()]
+        matched_ids = _filter_ids_by_enrichment_level(session, candidate_ids, enrichment_level)
+        query = query.filter(School.id.in_(matched_ids))
     return query
 
 
@@ -168,6 +193,7 @@ def list_pipeline(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
+    enrichment_level: str | None = Query(None, description="not_enriched|basic|partial|successful"),
     sort: str = "stage_updated_at:desc",
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
@@ -180,6 +206,7 @@ def list_pipeline(
     )
     query = _apply_pipeline_filters(
         query,
+        session=session,
         stage=stage,
         q=q,
         voivodeship=voivodeship,
@@ -188,6 +215,7 @@ def list_pipeline(
         score_min=score_min,
         score_max=score_max,
         score_include_unscored=score_include_unscored,
+        enrichment_level=enrichment_level,
     )
 
     total = query.count()
@@ -227,6 +255,7 @@ def list_pipeline_ids(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
+    enrichment_level: str | None = Query(None, description="not_enriched|basic|partial|successful"),
 ):
     """Every school id in the pipeline matching the given filters, across
     all pages (highest score first) -- lets the UI act on a whole filtered
@@ -239,6 +268,7 @@ def list_pipeline_ids(
     )
     query = _apply_pipeline_filters(
         query,
+        session=session,
         stage=stage,
         q=q,
         voivodeship=voivodeship,
@@ -247,9 +277,99 @@ def list_pipeline_ids(
         score_min=score_min,
         score_max=score_max,
         score_include_unscored=score_include_unscored,
+        enrichment_level=enrichment_level,
     )
     query = query.order_by(SchoolScore.total_score.desc().nulls_last())
     return {"ids": [row[0] for row in query.all()]}
+
+
+@router.get("/pipeline/export")
+def export_pipeline_csv(
+    session: Session = Depends(get_session),
+    stage: str | None = None,
+    q: str | None = Query(None, description="Search school name or city"),
+    voivodeship: str | None = None,
+    city: str | None = None,
+    tag_id: int | None = None,
+    score_min: int | None = None,
+    score_max: int | None = None,
+    score_include_unscored: bool = True,
+    enrichment_level: str | None = Query(None, description="not_enriched|basic|partial|successful"),
+    sort: str = "stage_updated_at:desc",
+):
+    """CSV export of a filtered Pipeline segment -- matches exactly what's
+    on screen (same filters, same sort), the same "hand a batch to a
+    teammate or an email tool" use case the Library's own export already
+    covers."""
+    query = (
+        session.query(School, PipelineState)
+        .join(PipelineState, PipelineState.school_id == School.id)
+        .outerjoin(CurrentScore, CurrentScore.school_id == School.id)
+        .outerjoin(SchoolScore, SchoolScore.id == CurrentScore.score_id)
+    )
+    query = _apply_pipeline_filters(
+        query,
+        session=session,
+        stage=stage,
+        q=q,
+        voivodeship=voivodeship,
+        city=city,
+        tag_id=tag_id,
+        score_min=score_min,
+        score_max=score_max,
+        score_include_unscored=score_include_unscored,
+        enrichment_level=enrichment_level,
+    )
+    field_name, _, direction = sort.partition(":")
+    sort_col = PIPELINE_SORTABLE_FIELDS.get(field_name, PipelineState.stage_updated_at)
+    sort_col = sort_col.desc().nulls_last() if direction != "asc" else sort_col.asc().nulls_last()
+    query = query.order_by(sort_col)
+
+    rows = query.all()
+    best_emails = _compute_best_emails(session, [school.id for school, _ in rows])
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "rspo_id", "name", "level", "voivodeship", "city", "website_url", "director_name",
+            "english_teacher_name", "best_email", "score", "stage", "students",
+            "next_action_date", "stage_updated_at", "entered_pipeline_at", "added_via",
+        ]
+    )
+    for school, state in rows:
+        score = (
+            session.query(SchoolScore)
+            .join(CurrentScore, CurrentScore.score_id == SchoolScore.id)
+            .filter(CurrentScore.school_id == school.id)
+            .one_or_none()
+        )
+        writer.writerow(
+            [
+                school.rspo_id,
+                school.name,
+                school.level.value,
+                school.voivodeship or "",
+                school.city or "",
+                school.website_url or "",
+                school.director_name or "",
+                school.english_teacher_name or "",
+                best_emails.get(school.id) or "",
+                score.total_score if score else "",
+                state.stage.value,
+                school.student_count if school.student_count is not None else "",
+                state.next_action_date or "",
+                state.stage_updated_at,
+                state.entered_pipeline_at,
+                state.pull_criteria or "",
+            ]
+        )
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=pipeline_export.csv"},
+    )
 
 
 @router.get("/pipeline/tasks-due", response_model=list[PipelineSchoolOut])

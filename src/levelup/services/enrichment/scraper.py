@@ -110,8 +110,24 @@ _NAME_GROUP = rf"({_NAME_WORD}\s+{_NAME_WORD})"
 # were a trailing re.IGNORECASE flag instead, the name group's own
 # [A-Z...] requirement would also go case-insensitive and start accepting
 # lowercase words as "names".
+# Bilingual (IB/international) schools commonly insert the English
+# translation of the role label right after the Polish one -- "Dyrektor
+# Szkoły / Head of School Dominika Pogorzelec-Nierzewska" (confirmed
+# directly: ekola.edu.pl). The plain optional single dash/colon separator
+# below can't span that whole phrase. Bounded the same way this file's
+# other fillers are (_INSTITUTIONAL_FILLER, _ROLE_LIST_FILLER): must
+# start with a literal "/" so it never fires on an ordinary "Dyrektor:
+# Name" line, and capped at 6 plain-ASCII words so it can't run away --
+# a stray Polish (diacritic) word ends the match immediately, since
+# diacritics aren't in [A-Za-z].
+_BILINGUAL_TRANSLATION_FILLER = r"(?:/\s*[A-Za-z]+(?:\s+[A-Za-z]+){0,5}\s+)?"
+
 DIRECTOR_RE = re.compile(
-    r"(?i:dyrektor[a-zżźćńółęąś]*\s*(?:szko[lł]y)?)\s*[:\-–]?\s*" + _TITLE_PREFIX + _NAME_GROUP
+    r"(?i:dyrektor[a-zżźćńółęąś]*\s*(?:szko[lł]y)?)\s*"
+    + _BILINGUAL_TRANSLATION_FILLER
+    + r"[:\-–]?\s*"
+    + _TITLE_PREFIX
+    + _NAME_GROUP
 )
 
 # Real staff/subject listings write "English teacher" several different
@@ -131,7 +147,7 @@ _ENGLISH_KEYWORD = (
     r"|anglista[a-ząćęłńóśźż]*)"
 )
 ENGLISH_TEACHER_RE = re.compile(
-    rf"(?i:{_ENGLISH_KEYWORD})\s*[:\-–]?\s*" + _TITLE_PREFIX + _NAME_GROUP
+    rf"(?i:{_ENGLISH_KEYWORD})\s*" + _BILINGUAL_TRANSLATION_FILLER + r"[:\-–]?\s*" + _TITLE_PREFIX + _NAME_GROUP
 )
 
 # A legally-mandated BIP (Biuletyn Informacji Publicznej) staff roster is
@@ -148,12 +164,42 @@ ENGLISH_TEACHER_RE = re.compile(
 # Some staff lists also parenthesize the subject right after the name --
 # "Kasperek Patrycja (język angielski)" -- so an optional "(" is tolerated
 # too.
-_NAME_TO_ROLE_CONNECTOR = rf"\s*\(?\s*(?:{EMAIL_RE.pattern}\s+)?\s*"
+#
+# BUG FIX: a dash/colon separator between name and role ("Anna
+# Ludwikowska-Wierzchowiec - dyrektor") wasn't tolerated at all -- confirmed
+# directly: on a real multi-person "Dyrekcja" listing ("... Anna
+# Ludwikowska-Wierzchowiec - dyrektor mgr Danuta Macewicz - zastępca
+# dyrektora ..."), the missing dash meant this name-first pattern never
+# matched, leaving only the keyword-first DIRECTOR_RE -- which, exactly like
+# the "Begierska Renata Dyrektor Lenda Kamila Wicedyrektor" case above,
+# treated "dyrektor" as introducing the NEXT person's name instead of the
+# one it actually follows. A single optional separator char is safe to add
+# (not an open-ended wildcard) since a real intervening word ("zastępca")
+# still blocks the match, so a deputy's line still can't be mistaken for
+# the director's.
+_NAME_TO_ROLE_CONNECTOR = rf"\s*\(?\s*(?:{EMAIL_RE.pattern}\s+)?\s*[:\-–]?\s*"
 DIRECTOR_NAME_FIRST_RE = re.compile(
     _NAME_GROUP + _NAME_TO_ROLE_CONNECTOR + r"(?i:dyrektor[a-zżźćńółęąś]*\s*(?:szko[lł]y)?)(?![a-ząćęłńóśźż])"
 )
 ENGLISH_TEACHER_NAME_FIRST_RE = re.compile(
     _NAME_GROUP + _NAME_TO_ROLE_CONNECTOR + rf"(?i:{_ENGLISH_KEYWORD})"
+)
+
+# A common commercial school-website builder (confirmed directly:
+# sp3prudnik.pl, footer credit "Realizacja: Superszkolna.pl") renders its
+# staff directory as "<Name> Funkcja: <role>[, <role>...]" per person --
+# e.g. "Ewa Jarzycka Funkcja: Dyrekcja, Nauczyciel". The role value here is
+# the noun "Dyrekcja" (the directorate/leadership), never "Dyrektor" (the
+# person-title DIRECTOR_RE/DIRECTOR_NAME_FIRST_RE look for), so neither
+# pattern matched at all on a page that plainly does name the director --
+# a real "not_enriched" outcome for a school with the info in plain text.
+# Bounded to this template's own literal "Funkcja:" label (not a generic
+# wildcard) so it can't misfire on unrelated "Name ... dyrekcja" prose
+# elsewhere on a page; a leading role list is tolerated since "Dyrekcja"
+# isn't always the first-listed role for a given person.
+_FUNKCJA_ROLE_CONNECTOR = r"\s*Funkcja:\s*(?:[A-ZŁŚŻŹĆŃÓĘĄa-ząćęłńóśźż]+\s*,\s*){0,4}"
+DIRECTOR_FUNKCJA_RE = re.compile(
+    _NAME_GROUP + _FUNKCJA_ROLE_CONNECTOR + r"(?i:dyrekcj[a-ząćęłńóśźż]*)\b"
 )
 
 # A subject/role often trails other qualifiers before it, comma-separated
@@ -179,7 +225,19 @@ ENGLISH_TEACHER_ROLE_LIST_RE = re.compile(
 # exactly the "wildcard admits garbage" failure mode from before, so this
 # only fires when a real dash/colon marks where the descriptor ends and
 # the name begins.
-_INSTITUTIONAL_FILLER = r"(?:\s+[A-ZŁŚŻŹĆŃÓĘĄ][a-ząćęłńóśźż]+){1,6}"
+#
+# BUG FIX: each filler "word" required EVERY token to be a single bare
+# capitalized word -- confirmed directly against a real EduPage staff
+# page: "Dyrektor Zespołu Szkolno-Przedszkolnego nr 4 w Krapkowicach -
+# mgr Joanna Drescher" broke this on two counts at once, a hyphenated
+# compound ("Szkolno-Przedszkolnego") and lowercase connector words +
+# a bare number ("nr 4 w"), so the filler match died before ever
+# reaching the real separator and the whole pattern returned no match at
+# all. Widened to the same permissive-but-bounded, non-greedy style
+# already used for _ROLE_LIST_FILLER below -- still requires the
+# eventual real dash/colon to anchor where the descriptor ends, so it
+# can't run away and swallow unrelated text.
+_INSTITUTIONAL_FILLER = r"(?:\s+[\w.-]+){1,8}?"
 DIRECTOR_INSTITUTIONAL_RE = re.compile(
     r"(?i:dyrektor[a-zżźćńółęąś]*)" + _INSTITUTIONAL_FILLER + r"\s*[:\-–]\s*" + _TITLE_PREFIX + _NAME_GROUP
 )
@@ -208,6 +266,14 @@ _COMMON_POLISH_FIRST_NAMES = frozenset(n.lower() for n in [
     "Milena", "Dominika", "Ewelina", "Wiesława", "Grazyna", "Bogusława",
     "Mariola", "Marianna", "Bernadeta", "Longina", "Czesława", "Ryszarda",
     "Bogusia", "Zdzisława", "Anastazja", "Blanka", "Estera", "Laura", "Kornelia",
+    # Confirmed directly: a real, correctly-placed English teacher name
+    # ("Elwira Kopczyńska") was rejected purely because "Elwira" wasn't on
+    # this list -- an ordinary, if less common, Polish first name.
+    "Elwira",
+    # Confirmed directly: a real, correctly-placed director name ("Adrian
+    # Ziółkowski") was rejected the same way -- "Adrian" is an ordinary,
+    # common Polish given name that simply wasn't on this list.
+    "Adrian",
     "Jan", "Andrzej", "Piotr", "Krzysztof", "Stanisław", "Tomasz", "Paweł",
     "Józef", "Marcin", "Marek", "Michał", "Grzegorz", "Jerzy", "Tadeusz",
     "Adam", "Zbigniew", "Henryk", "Ryszard", "Wojciech", "Kazimierz", "Łukasz",
@@ -312,6 +378,21 @@ def _is_patron_name(candidate: str, patron_tokens: set[str]) -> bool:
 #   - a named disability population: for the deaf/blind/low-vision, autism,
 #     or (intellectual/other) disability -- these words appear in a school's
 #     name only when the school is dedicated to that population.
+#
+# BUG FIX: several real dedicated institutions carry NONE of the markers
+# above at all -- confirmed directly against 5 schools a user found were
+# never tagged:
+#   - a school run INSIDE a chronic-illness setting -- "PRZY ZAKŁADACH
+#     OPIEKI ZDROWOTNEJ" (at healthcare facilities) or "PRZY ... SZPITALU
+#     REHABILITACYJNYM" (at a rehabilitation hospital) -- these two
+#     schools' own names have no "specjalna" and no disability keyword at
+#     all, only the facility context itself and (for one of them) "DLA
+#     DZIECI PRZEWLEKLE CHORYCH" (for chronically ill children).
+#   - a school run INSIDE a juvenile detention centre -- "W ZAKŁADZIE
+#     POPRAWCZYM" -- a distinct, unambiguous institutional-type marker;
+#     RSPO's own "specificity" field (see rspo_detail.py) does NOT cover
+#     this case either (it's a justice-system classification, not an
+#     education-law "specjalna" one), so this stays a name-only signal.
 _SPECIAL_SCHOOL_NAME_RE = re.compile(
     r"\bspecjaln(?!o[śs]|ie)"  # specjalna/specjalny/specjalne(j) but NOT specjalność/specjalnie
     r"|o[śs]rodek\s+(?:szkolno-?\s*wychowawcz|rewalidacyjno)"
@@ -321,6 +402,10 @@ _SPECIAL_SCHOOL_NAME_RE = re.compile(
     r"|niewidom|s[łl]abowidz|niedowidz"
     r"|autyz|autystyczn|aspergera"
     r"|niepe[łl]nosprawn|upo[śs]ledz"
+    r"|zak[łl]ad(?:zie|ach|em)?\s+poprawcz"
+    r"|zak[łl]ad(?:ach|zie)?\s+opieki\s+zdrowotnej"
+    r"|przewlekl\w*\s+chor|chorob\w*\s+przewlek"
+    r"|szpital\w*\s+rehabilitacyjn"
 )
 
 
@@ -354,7 +439,15 @@ SUBPAGE_KEYWORDS_BY_PRIORITY = (
         "kadra", "pracownicy", "rada-pedagogiczna", "rada pedagogiczna", "dane podstawowe",
     ),
     ("kontakt", "wladze", "władze", "struktura"),
-    ("o-szkole", "o-nas"),
+    # BUG FIX: only the hyphenated URL-slug spelling was listed -- confirmed
+    # directly: zsbratian.edupage.org's own nav label is the ordinary
+    # Polish phrase "O szkole" (a space, not a hyphen, and its href is the
+    # unrelated English word "/about/") -- matched neither the href nor
+    # the label, so this tier never fired at all despite that exact page
+    # naming the director outright ("Dyrekcja Dyrektor Adrian Ziółkowski").
+    # A real label is prose, not a URL slug -- the space-separated form is
+    # what a human-readable nav item actually looks like.
+    ("o-szkole", "o szkole", "o-nas", "o nas"),
     # "Redakcja BIP" is nominally just editorial credits for the BIP page
     # itself, but Polish BIP regulations attribute publishing
     # responsibility to someone -- often literally the director -- so this
@@ -399,12 +492,45 @@ SUBPAGE_EXCLUDE_KEYWORDS = (
 _SCHOOL_LEVEL_STEMS = ("liceum", "technikum", "podstaw", "gimnazjum", "przedszkol")
 _HUB_LINK_MAX_WORDS = 6
 
-
 def _is_own_school_hub_link(label: str, school_name: str) -> bool:
+    """Level-stem-based hub-jump detection (e.g. a "Liceum Ogólnokształcące"
+    nav label matching a school whose own name contains "liceum").
+    Reserved for genuinely different-host hub jumps -- the call site
+    additionally requires that -- since promoting a same-host link this
+    way risks nothing worse than exploring one of the school's own
+    pages, while a cross-domain jump could land on an entirely different
+    organization's content. See _is_bare_hub_label below for the
+    same-host-safe counterpart."""
     if not label or len(label.split()) > _HUB_LINK_MAX_WORDS:
         return False
     school_name_lower = school_name.lower()
     return any(stem in school_name_lower and stem in label for stem in _SCHOOL_LEVEL_STEMS)
+
+
+# A "Zespół Szkolno-Przedszkolny" (combined school+kindergarten complex)
+# site sometimes labels its hub-entrance links with just the bare word --
+# "Szkoła" / "Przedszkole", no level qualifier like "Podstawowa" at all --
+# confirmed directly: psp28.opole.pl's own nav is literally "Szkoła |
+# Przedszkole | Kontakt", and "Szkoła" alone shares no level-stem with
+# anything (_SCHOOL_LEVEL_STEMS is looking for "podstaw", not the bare,
+# generic word "school"), so it was invisible to hub-detection entirely
+# and the crawl never went one hop deeper to find the real staff page.
+# NOT gated on the school's own official name mentioning "Zespół
+# Szkolno-Przedszkolny" -- confirmed directly, psp28's own RSPO name is
+# just an ordinary "Publiczna Szkoła Podstawowa nr 28" with no hint its
+# site happens to be built this way. Gated instead on the page itself
+# actually having BOTH bare labels side by side -- a real, observable
+# structural signal that this is genuinely a two-section hub, not just
+# one standalone school's ordinary self-link back to its own homepage
+# (which would only ever have "Szkoła" alone, never paired with
+# "Przedszkole"). Deliberately allowed on the SAME host, unlike the
+# level-stem check above -- this link never leaves the school's own
+# domain, so there's no cross-organization risk to guard against.
+_BARE_HUB_LABELS = ("szkoła", "szkola", "przedszkole")
+
+
+def _is_bare_hub_label(label: str, paired_bare_labels: bool) -> bool:
+    return paired_bare_labels and label.strip() in _BARE_HUB_LABELS
 
 # "bip" is short enough to collide with unrelated hyphenated slugs -- the
 # Joomla-based BIP engine that many Polish schools use names its own
@@ -414,7 +540,15 @@ def _is_own_school_hub_link(label: str, school_name: str) -> bool:
 # a top-priority BIP match, drowning out the real "Rada Pedagogiczna"
 # staff-roster link in the crawl budget. Hyphen does NOT count as a valid
 # boundary here -- that's precisely how "redakcja-bip" collides.
-_AMBIGUOUS_SHORT_KEYWORDS = frozenset({"bip"})
+#
+# "o nas" (added alongside the existing hyphenated "o-nas" so a normal,
+# space-separated nav label matches too) has the same problem in the
+# opposite direction: it's a bare substring of ordinary Polish phrases
+# like "dołącz do nas"/"napisz do nas" ("join us"/"write to us") that have
+# nothing to do with an "About us" page. A boundary check is what tells
+# "o nas" (its own phrase) apart from "d-o nas" (the tail end of "do
+# nas").
+_AMBIGUOUS_SHORT_KEYWORDS = frozenset({"bip", "o nas"})
 
 # "rodo" has the OPPOSITE problem: it's a bare substring INSIDE ordinary
 # Polish words, not just hyphen-joined slugs. Confirmed directly: the
@@ -459,7 +593,7 @@ def _is_bip_url(url: str) -> bool:
         return True
     return "bip" in [seg for seg in parsed.path.lower().split("/") if seg]
 
-MAX_SAME_SITE_PAGES = 8
+MAX_SAME_SITE_PAGES = 10
 MAX_SEARCH_RESULTS_PER_QUERY = 3
 REQUEST_DELAY_SECONDS = 0.4  # light politeness pause between fetches
 
@@ -482,6 +616,39 @@ COMMON_PROBE_SLUGS = (
     "kontakt", "dyrekcja", "kadra", "grono-pedagogiczne", "nauczyciele",
     "pracownicy", "kadra-pedagogiczna", "nasi-nauczyciele", "o-szkole/kontakt",
 )
+# One past the lowest real keyword tier (redakcja-bip) -- a blind guess
+# should never outrank an actually-matched link, whenever either is found.
+_GUESS_TIER = len(SUBPAGE_KEYWORDS_BY_PRIORITY)
+
+# Some multi-school-under-one-foundation sites (confirmed directly:
+# ekola.edu.pl) split the homepage into a hub of colored panels -- one per
+# sibling school -- that navigate via a JS click handler with no <a href>
+# at all, not even a bare onclick attribute visible in the server response.
+# Link discovery (and even COMMON_PROBE_SLUGS, which only probes the
+# ROOT) finds nothing, because the real content lives one level down, at
+# a level-named path (ekola.edu.pl/liceum/, .../szkola-podstawowa). Tried
+# BEFORE the flat COMMON_PROBE_SLUGS since landing on the right subsite
+# unlocks its own real nav (kontakt/kadra/etc via ordinary link
+# discovery) rather than guessing at the root. Keyed by the same level
+# stems already used for hub-link labels (_SCHOOL_LEVEL_STEMS) -- only
+# the stem(s) actually present in THIS school's own name are tried, never
+# the full list, to keep the probe budget small.
+_LEVEL_HUB_SLUGS_BY_STEM = {
+    "liceum": ("liceum", "lo"),
+    "technikum": ("technikum",),
+    "podstaw": ("sp", "szkola-podstawowa", "podstawowa"),
+    "gimnazjum": ("gimnazjum",),
+    "przedszkol": ("przedszkole",),
+}
+
+
+def _level_hub_slugs_for(school_name: str) -> tuple[str, ...]:
+    name_lower = school_name.lower()
+    slugs: list[str] = []
+    for stem, candidates in _LEVEL_HUB_SLUGS_BY_STEM.items():
+        if stem in name_lower:
+            slugs.extend(candidates)
+    return tuple(slugs)
 
 
 def _normalize_url(url: str) -> str:
@@ -501,24 +668,40 @@ def _same_organization_host(url_a: str, url_b: str) -> bool:
     return host_a == host_b
 
 
-def _hostname_fallback_variant(url: str) -> str | None:
-    """When the exact stored hostname doesn't resolve/connect at all, this
-    is the one structurally-obvious same-organization variant worth
-    trying before giving up -- confirmed directly: RSPO recorded a "www."
-    for a school whose real site lives under a different subdomain, and
-    that exact "www." host has no DNS record at all, while the bare
-    domain (a shared hub for a group of schools under that foundation)
-    resolves fine. Deliberately narrow: only a www-add/www-strip swap on
-    the SAME host, never a guessed subdomain or a different domain
-    entirely -- that would risk landing on an unrelated site and
-    mistaking it for this school's own."""
+_REDUNDANT_PL_SUFFIX_RE = re.compile(r"\.(?:org|com|net|info|eu)\.pl$", re.IGNORECASE)
+
+
+def _hostname_fallback_variants(url: str) -> list[str]:
+    """When the exact stored hostname doesn't resolve/connect at all,
+    these are the structurally-obvious same-organization variants worth
+    trying before giving up. Deliberately narrow: never a guessed
+    subdomain or a different domain entirely -- that would risk landing
+    on an unrelated site and mistaking it for this school's own.
+      - www-add/www-strip -- confirmed directly: RSPO recorded a "www."
+        for a school whose real site lives under a different subdomain,
+        and that exact "www." host has no DNS record at all, while the
+        bare domain (a shared hub for a group of schools under that
+        foundation) resolves fine.
+      - BUG FIX: a stray, redundant ".pl" appended after an
+        already-complete international domain -- confirmed directly:
+        "zsbratian.edupage.org.pl" doesn't resolve at the DNS level AT
+        ALL (not blocked, not slow -- genuinely no such name), while the
+        real site, missing only that tacked-on ".pl", is
+        "zsbratian.edupage.org" and resolves fine. edupage.org (a
+        Slovak-run platform hosting many Polish schools) is never
+        actually a ".pl" domain -- whoever entered this one seems to
+        have assumed every Polish school's site ends in ".pl" and added
+        it on top of an address that was already complete."""
     parsed = urlparse(url)
     host = parsed.netloc
     if not host:
-        return None
-    if host.lower().startswith("www."):
-        return url.replace(host, host[4:], 1)
-    return url.replace(host, f"www.{host}", 1)
+        return []
+    variants = [
+        url.replace(host, host[4:], 1) if host.lower().startswith("www.") else url.replace(host, f"www.{host}", 1)
+    ]
+    if _REDUNDANT_PL_SUFFIX_RE.search(host):
+        variants.append(url.replace(host, host[:-3], 1))
+    return variants
 
 
 # A BIP is very commonly hosted on its own subdomain of the same
@@ -550,27 +733,72 @@ USER_AGENT = (
 )
 
 
+def _decoded_text(resp: requests.Response) -> str:
+    """BUG FIX: requests defaults a response's encoding to ISO-8859-1
+    whenever the server's Content-Type header omits a charset (a plain
+    "text/html" with nothing else) -- the HTTP spec's own fallback, but
+    wrong for the overwhelming majority of real Polish sites, which serve
+    actual UTF-8 bytes and just don't bother declaring it in the header.
+    Confirmed directly: zpo3dzialdowo.pl's real title is "Zespół Placówek
+    Oświatowych nr 3 w Działdowie" (readable, correct UTF-8 bytes), but
+    resp.text silently mojibake'd it to "ZespÃ³Å PlacÃ³wek OÅwiatowych..."
+    -- every Polish-diacritic-sensitive regex and keyword match in this
+    file (director names, "Dyrekcja", school-vs-municipal verification,
+    all of it) would silently fail against text corrupted this way, on
+    any site with this same header gap. requests' own apparent_encoding
+    (charset-normalizer's real content sniffing) correctly identified
+    UTF-8 for this exact page -- trusted here ONLY as an override for the
+    spec-default fallback, never overriding a charset the server actually
+    declared, since an explicit declaration is still more reliable than a
+    guess."""
+    if resp.encoding and resp.encoding.lower() == "iso-8859-1" and resp.apparent_encoding:
+        resp.encoding = resp.apparent_encoding
+    return resp.text
+
+
+_FETCH_RETRY_DELAY_SECONDS = 1.5
+
+
 def fetch_page(url: str) -> str | None:
-    try:
-        resp = requests.get(url, timeout=15, headers={"User-Agent": USER_AGENT})
-        resp.raise_for_status()
-        return resp.text
-    except requests.exceptions.SSLError:
-        # Confirmed directly: some Polish school sites (e.g. lo2.lublin.eu)
-        # serve an incomplete certificate chain (missing intermediate) --
-        # the content itself is fine, browsers just cross-reference the
-        # missing cert from elsewhere. This is public, read-only content
-        # with no data submitted, so falling back to an unverified request
-        # only when strict verification specifically fails is a reasonable
-        # trade -- it's not blanket-disabling verification for every site.
+    """BUG FIX: one short, bounded retry, specifically for a TIMEOUT or an
+    HTTP error response (403/429/5xx) -- confirmed directly across a real
+    batch: several schools' sites logged as "unreachable" turned out to
+    be reachable again just minutes later on a manual recheck (already a
+    known, accepted characteristic of this environment -- see the crawl's
+    own headless-browser retry below), and one returned a 403 specifically,
+    exactly the shape of a transient anti-bot response that often clears
+    a couple seconds later. Deliberately NOT retried for a connection/DNS
+    failure -- an address that flat-out doesn't resolve or refuses the
+    connection right now won't resolve differently a second later in the
+    same run, so retrying it would only add a second full timeout for a
+    genuinely dead site, never a real chance of success."""
+    for attempt in range(2):
         try:
-            resp = requests.get(url, timeout=15, headers={"User-Agent": USER_AGENT}, verify=False)
+            resp = requests.get(url, timeout=15, headers={"User-Agent": USER_AGENT})
             resp.raise_for_status()
-            return resp.text
+            return _decoded_text(resp)
+        except requests.exceptions.SSLError:
+            # Confirmed directly: some Polish school sites (e.g. lo2.lublin.eu)
+            # serve an incomplete certificate chain (missing intermediate) --
+            # the content itself is fine, browsers just cross-reference the
+            # missing cert from elsewhere. This is public, read-only content
+            # with no data submitted, so falling back to an unverified request
+            # only when strict verification specifically fails is a reasonable
+            # trade -- it's not blanket-disabling verification for every site.
+            try:
+                resp = requests.get(url, timeout=15, headers={"User-Agent": USER_AGENT}, verify=False)
+                resp.raise_for_status()
+                return _decoded_text(resp)
+            except requests.RequestException:
+                return None
+        except (requests.exceptions.Timeout, requests.exceptions.HTTPError):
+            if attempt == 0:
+                time.sleep(_FETCH_RETRY_DELAY_SECONDS)
+                continue
+            return None
         except requests.RequestException:
             return None
-    except requests.RequestException:
-        return None
+    return None
 
 
 def _find_subpage_links(soup: BeautifulSoup, base_url: str, school_name: str = "") -> list[tuple[int, str]]:
@@ -589,23 +817,91 @@ def _find_subpage_links(soup: BeautifulSoup, base_url: str, school_name: str = "
     seen: set[str] = set()
     found: list[tuple[int, str]] = []
 
+    # BUG FIX: a bare .strip() only trims LEADING/TRAILING whitespace --
+    # it doesn't touch a non-breaking space (U+00A0, "\xa0") sitting
+    # BETWEEN two words, which real HTML uses constantly (a CMS/editor's
+    # "&nbsp;" inserted to stop a short label from wrapping mid-phrase).
+    # Confirmed directly: zsbratian.edupage.org's own "O szkole" nav
+    # label is actually "o\xa0szkole" -- invisible to a keyword match
+    # against a normal, space-separated "o szkole", so this exact link
+    # (which names the director outright) never got a tier at all.
+    # re.sub(r"\s+", ...) -- already used everywhere else in this file
+    # for extracted text -- treats \xa0 as whitespace correctly; only
+    # this label-building step had skipped that normalization.
+    all_labels = {re.sub(r"\s+", " ", a.get_text(" ")).strip().lower() for a in soup.select("a[href]")}
+    paired_bare_labels = ("szkoła" in all_labels or "szkola" in all_labels) and "przedszkole" in all_labels
+
     for a in soup.select("a[href]"):
         href = a["href"]
-        label = a.get_text(" ").strip().lower()
+        # BUG FIX: a real school site's own markup sometimes forgets the
+        # "mailto:" prefix on an email link -- confirmed directly:
+        # zsz-gk.pl has `<a href="informatyk@zsz-gk.pl">O nas</a>` (a
+        # genuine typo on the SITE's own end, not fixable there). Fed
+        # into urljoin as-is, a bare address with no scheme is treated as
+        # a relative path segment, producing a nonsense URL
+        # ("zsz-gk.pl/contact/informatyk@zsz-gk.pl") that wastes a crawl
+        # slot on a guaranteed 404/junk page. Skipped outright rather than
+        # visited -- it was never a navigable link to begin with.
+        if EMAIL_RE.fullmatch(href.strip()):
+            continue
+        label = re.sub(r"\s+", " ", a.get_text(" ")).strip().lower()
         haystack = f"{href.lower()} {label}"
         if any(_keyword_matches(kw, haystack) for kw in SUBPAGE_EXCLUDE_KEYWORDS):
             continue
-        if school_name and _is_own_school_hub_link(label, school_name):
-            tier = -1  # above even BIP -- this is the entrance to the right site section at all
+        full = urljoin(base_url, href)
+        # Tier -1 means "the entrance to a DIFFERENT section/subsite worth
+        # jumping to" -- only meaningful when the link actually points
+        # somewhere other than the page we're already parsing. Confirmed
+        # directly: once inside a school's own correct subsite
+        # (ekola.edu.pl/liceum/), that subsite's OWN internal nav labels
+        # ("Klasa 1 liceum", "Zasady liceum") still contain the level word
+        # and kept re-matching tier -1, outranking genuine kadra/kontakt
+        # links found elsewhere and burning the crawl budget on enrollment
+        # pages before ever reaching the real staff page.
+        if school_name and (
+            (_is_own_school_hub_link(label, school_name) and not _same_organization_host(full, base_url))
+            or _is_bare_hub_label(label, paired_bare_labels)
+        ):
+            tier = -1
         else:
-            tier = next((i for i, kws in enumerate(tiers) if any(_keyword_matches(kw, haystack) for kw in kws)), None)
-            if tier is None:
+            # BUG FIX: matching "bip" against the full href+label haystack
+            # meant EVERY individual document a school's own BIP section
+            # publishes -- confirmed directly: a homepage's "recent BIP
+            # posts" widget listed ~18 procurement/financial notices, each
+            # a distinct href under /bip/... with its own specific label
+            # ("Sprawozdania finansowe za rok 2025", "Plan postępowań...")
+            # -- falsely inherited top (tier 0) priority purely because
+            # "bip" is a substring of every one of their URLs. That
+            # flooded the frontier with 18 tier-0 entries ahead of the
+            # genuinely useful "Zarządzenia Dyrektora" (tier 1) and
+            # "Kontakt" (tier 2) links also on the same page, burning the
+            # whole crawl budget on financial reports before ever reaching
+            # either. Only the LABEL is checked for this one tier -- "bip"
+            # as a URL substring is nearly guaranteed on any subpage of an
+            # active BIP section, so it's not a meaningful signal there,
+            # while a label like "Strona główna BIP" (the actual entrance,
+            # the only one of those 18 that said so) still is.
+            is_bip_tier = tier_offset == 0
+            for i, kws in enumerate(tiers):
+                check_haystack = label if (is_bip_tier and i == 0) else haystack
+                if any(_keyword_matches(kw, check_haystack) for kw in kws):
+                    tier = i
+                    break
+            else:
                 continue
             tier += tier_offset
-        full = urljoin(base_url, href)
         if _registrable_domain(urlparse(full).netloc) != base_domain:
             continue  # same organization only (subdomains OK, e.g. bip.szkola.pl)
-        if full in seen or full == base_url:
+        # A same-page anchor ("#kontakt") urljoins to a URL that's never
+        # string-equal to base_url (the fragment is appended), but it's
+        # still the exact same page -- confirmed directly: a single-page
+        # site's only "subpage link" was its own "#kontakt" anchor, which
+        # slipped past a literal `full == base_url` check and blocked the
+        # COMMON_PROBE_SLUGS fallback from ever running (that fallback only
+        # fires when subpage_links comes back empty). _dedup_key ignores
+        # the fragment (and query), the same way it already collapses
+        # http/https and www/non-www variants of one page.
+        if full in seen or _dedup_key(full) == _dedup_key(base_url):
             continue
         if full.lower().split("?")[0].endswith(NON_HTML_EXTENSIONS):
             continue  # skip PDFs/images/docs -- not a page worth parsing
@@ -613,6 +909,153 @@ def _find_subpage_links(soup: BeautifulSoup, base_url: str, school_name: str = "
         found.append((tier, full))
 
     return found
+
+
+# A "chooser" hub -- a page that's just a small set of links out to each
+# of its separately-hosted sub-institutions' own sites -- is invisible to
+# everything above whenever those links don't carry a label the
+# tier/keyword system recognizes. Confirmed directly, two different real
+# shapes of this same underlying problem:
+#   - zpo3dzialdowo.pl's homepage has exactly 2 links, each a bare
+#     `<a href="..."><img src="Strona2.png"/></a>` with no text, no alt,
+#     no title at all -- nothing for _is_own_school_hub_link or
+#     _is_bare_hub_label to match against. A genuinely different
+#     REGISTRABLE domain on the other end (edupage.org vs. a bespoke
+#     .pl domain), so it'd also be discarded outright by
+#     _find_subpage_links's own "same organization only" filter even if
+#     it WERE labelled.
+#   - zsplw.pl's homepage links to szkola.zsplw.pl and
+#     przedszkole.zsplw.pl (the school and kindergarten, SAME
+#     registrable domain, different subdomains -- so _find_subpage_links
+#     itself would keep these), each labelled just "Wejście" ("Enter") --
+#     a generic call-to-action, not an institution-type word, so neither
+#     _is_own_school_hub_link (needs a level-stem match) nor
+#     _is_bare_hub_label (needs the bare word "Szkoła"/"Przedszkole"
+#     exactly) recognizes it either.
+#
+# Recognized here by SHAPE instead of label: a page this sparse (a
+# handful of links, almost no visible text of its own) is a chooser, not
+# a real content page, so every link to a different HOST -- same
+# registrable domain or not -- is a candidate, trusted only once FETCHED
+# and confirmed by the destination's own content (_page_matches_school),
+# never by the incoming link's label. Capped at a handful of
+# links/fetches so an ordinary sparse homepage that ISN'T actually a
+# chooser can't run away with the crawl budget on a false match attempt.
+_MAX_HUB_CANDIDATE_LINKS = 6
+_MAX_HUB_CANDIDATE_FETCHES = 3
+
+
+def _find_hub_candidates(soup: BeautifulSoup, base_url: str) -> list[str]:
+    base_host = urlparse(base_url).netloc.lower().removeprefix("www.")
+    text_len = len(re.sub(r"\s+", "", soup.get_text()))
+    links = [urljoin(base_url, a["href"]) for a in soup.select("a[href]") if a.get("href")]
+    links = [link for link in links if link.startswith(("http://", "https://"))]
+    if text_len > 600 or len(links) > _MAX_HUB_CANDIDATE_LINKS:
+        return []
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for full in links:
+        if full.lower().split("?")[0].endswith(NON_HTML_EXTENSIONS):
+            continue
+        host = urlparse(full).netloc.lower().removeprefix("www.")
+        if host != base_host and full not in seen:
+            seen.add(full)
+            candidates.append(full)
+    return candidates[:_MAX_HUB_CANDIDATE_FETCHES]
+
+
+def _page_matches_school(html: str, school_name: str) -> bool:
+    """Confirms a fetched hub-candidate page is genuinely THIS school, not
+    a sibling institution sharing the same chooser hub -- checked against
+    the destination's own content, never the incoming link's label/text
+    (which, for the pages this exists to handle, often carries none at
+    all). A patron name (see _patron_name_tokens) is the strongest signal
+    available -- specific enough that a sibling kindergarten or liceum on
+    the same hub essentially never shares it -- checked FIRST, but not
+    exclusively: falls back to the school's own level+number
+    ("podstawowa" + "nr 4"), the next most distinguishing pair its own
+    name carries, whenever the patron check doesn't confirm a match.
+
+    BUG FIX: a patron existing wrongly short-circuited straight to
+    "reject" when the patron itself just isn't mentioned on THIS
+    particular page -- confirmed directly: "SZKOŁA PODSTAWOWA NR 4 IM.
+    JANA PAWŁA II"'s own real homepage (szkola.zsplw.pl) plainly reads
+    "Szkoła Podstawowa nr 4 w Lidzbarku Warmińskim" -- a clear number+level
+    match -- but never once mentions the patron "Jana Pawła II" anywhere
+    on that specific page (a common real pattern: the patron's own
+    biography usually lives on a separate "Patron" subpage, not the
+    homepage). A school with neither signal simply can't be confirmed
+    this way and the candidate is left untrusted.
+
+    BUG FIX: the number and level checks used to run INDEPENDENTLY --
+    "nr 3" anywhere on the page, AND a level stem anywhere on the page,
+    treated as good enough together even when they weren't actually
+    talking about the same thing. Confirmed directly: a sibling
+    kindergarten sharing the Działdowo hub wrongly "matched" a school
+    numbered 3 this way -- its own footer names the shared PARENT
+    complex, "Zespół Placówek Oświatowych **nr 3**" (that "3" is the
+    complex's number, not this school's), and separately mentions
+    "podstaw**a programowa**" ("core curriculum" -- a phrase every
+    school AND kindergarten site has, nothing to do with being a
+    "szkoła podstawowa"). Requiring the level word to be immediately
+    followed by "nr N" (as an ordinary school actually writes its own
+    name -- "Szkoła Podstawowa nr 4") closes both holes at once."""
+    haystack = re.sub(r"\s+", " ", BeautifulSoup(html, "html.parser").get_text(" ")).lower()
+    patron_tokens = _patron_name_tokens(school_name)
+    if patron_tokens:
+        hits = sum(1 for token in patron_tokens if token in haystack)
+        if hits >= max(1, len(patron_tokens) - 1):
+            return True
+    name_lower = school_name.lower()
+    number_match = re.search(r"\bnr\.?\s*(\d+)\b", name_lower)
+    if not number_match:
+        return False
+    number = number_match.group(1)
+    relevant_stems = [stem for stem in _SCHOOL_LEVEL_STEMS if stem in name_lower]
+    return any(re.search(rf"{re.escape(stem)}\w*\s+nr\.?\s*{number}\b", haystack) for stem in relevant_stems)
+
+
+# A school's site sometimes moves house entirely -- the OLD domain (often
+# a legacy free host like wodip.opole.pl, from an older generation of
+# Polish school hosting) is left running, but every real link on every
+# one of its pages now points at the NEW domain. Confirmed directly:
+# zs_baborow.wodip.opole.pl serves the exact same homepage content for
+# every guessed path (no real per-page routing left at all -- a stale
+# shell), and of its ~230 outbound links, 220 point to zspbaborow.edu.pl
+# (the rest are the ordinary WordPress-theme social-share/credit
+# boilerplate every page like this carries). That's a fundamentally
+# different shape from the bare "chooser hub" case above (a handful of
+# unlabeled links, almost no content of its own) -- this is a normal,
+# content-rich page whose real navigation just happens to lead somewhere
+# else entirely. Detected by DOMINANCE (one other domain must be a clear
+# majority of all outbound links, not merely the most common one) rather
+# than content-matching each candidate, since a real page this rich in
+# genuine navigation is already strong evidence on its own -- checking
+# every single one of 220 links individually the way the hub-candidate
+# path does would be needless, slow, and redundant.
+_MIN_MIGRATION_LINKS = 5
+_MIGRATION_DOMINANCE_RATIO = 0.6
+
+
+def _detect_domain_migration(soup: BeautifulSoup, base_url: str) -> str | None:
+    base_domain = _registrable_domain(urlparse(base_url).netloc)
+    domain_counts: dict[str, int] = {}
+    total = 0
+    for a in soup.select("a[href]"):
+        href = a.get("href")
+        if not href or not href.startswith(("http://", "https://")):
+            continue
+        domain = _registrable_domain(urlparse(href).netloc)
+        if domain == base_domain:
+            continue
+        total += 1
+        domain_counts[domain] = domain_counts.get(domain, 0) + 1
+    if not domain_counts:
+        return None
+    top_domain, top_count = max(domain_counts.items(), key=lambda kv: kv[1])
+    if top_count < _MIN_MIGRATION_LINKS or top_count / total < _MIGRATION_DOMINANCE_RATIO:
+        return None
+    return top_domain
 
 
 def _collect_candidate_emails(soup: BeautifulSoup, text: str) -> list[str]:
@@ -663,13 +1106,40 @@ def _staff_entries(soup: BeautifulSoup) -> list[str]:
     line (split on <br>), and each title-prefixed segment of a run-together
     paragraph. Matching a subject to a name WITHIN one entry is what stops
     the extractor from grabbing the ADJACENT teacher -- the "read the row,
-    not the whole flattened column" fix."""
+    not the whole flattened column" fix.
+
+    BUG FIX: a real staff page can have an outer <tr> that wraps a NESTED
+    table (or a malformed/duplicated markup structure) -- confirmed
+    directly: its own get_text() then returns the ENTIRE staff list
+    concatenated as one giant row, ahead of the genuinely-one-teacher-each
+    rows in find_all("tr")'s own result order. Since the English-teacher
+    scan takes the FIRST entry containing the keyword, that giant blob's
+    OWN first name (the director, teaching art two rows above the actual
+    English teacher) won -- a wrong-person misattribution, not just a
+    missed one. The same title-prefix split already applied to <li>/<p>
+    below fixes this the same way: splitting the giant blob turns it back
+    into the same one-teacher-per-entry pieces the individual rows
+    already provide, so even if it's scanned first, its first "mgr Name
+    Subject" piece is now the row it actually corresponds to."""
     entries: list[str] = []
     for tr in soup.find_all("tr"):
         row = re.sub(r"\s+", " ", tr.get_text(" ", strip=True))
-        if row:
-            entries.append(row)
-    for el in soup.find_all(["li", "dd", "p"]):
+        if not row:
+            continue
+        parts = [p.strip() for p in _TITLE_SPLIT_RE.split(row) if p.strip()]
+        entries.extend(parts if len(parts) > 1 else [row])
+    # BUG FIX: confirmed directly -- a real CMS-rendered staff page put
+    # its whole "Name - Subject<br>Name - Subject<br>..." list inside a
+    # bare <div> with no <li>/<dd>/<p> anywhere, which this loop
+    # previously never looked inside at all (found zero entries, not
+    # wrong ones). <div> is otherwise the most generic, deeply-nested
+    # container in HTML -- safe to add here because a large ancestor
+    # <div> wrapping many unrelated elements still gets a "\n" separator
+    # inserted at every tag boundary (not just literal <br>s), so it
+    # splits into many small, mostly-irrelevant lines rather than one
+    # giant merged blob; only a line that actually contains both a valid
+    # name and the keyword ever matches anything downstream.
+    for el in soup.find_all(["li", "dd", "p", "div"]):
         for line in el.get_text("\n").split("\n"):
             line = re.sub(r"\s+", " ", line).strip()
             if not line:
@@ -741,7 +1211,9 @@ def _extract(html: str, url: str, school_name: str = "") -> dict:
 
     patron_tokens = _patron_name_tokens(school_name)
 
-    director_name = _earliest_valid_match(text, (DIRECTOR_RE, DIRECTOR_NAME_FIRST_RE, DIRECTOR_INSTITUTIONAL_RE))
+    director_name = _earliest_valid_match(
+        text, (DIRECTOR_RE, DIRECTOR_NAME_FIRST_RE, DIRECTOR_INSTITUTIONAL_RE, DIRECTOR_FUNKCJA_RE)
+    )
     if director_name and _is_patron_name(director_name, patron_tokens):
         director_name = None
     # PRIMARY: read the English teacher per staff-entry (see
@@ -784,16 +1256,62 @@ def _extract(html: str, url: str, school_name: str = "") -> dict:
     }
 
 
-def _search_duckduckgo(query: str, max_results: int = MAX_SEARCH_RESULTS_PER_QUERY) -> list[str]:
-    """Free, no-key web search via DuckDuckGo's HTML endpoint -- the only
-    realistic way to reach a voivodeship/powiat/gmina/local-news page
-    about one specific school. This is scraping a search results page,
-    not a real API: a layout change or rate limit just yields fewer or no
-    links, never an exception that fails the whole enrichment."""
+_SEARCH_BLOCK_MARKERS = ("anubis_challenge", "unusual traffic", "recaptcha", "are you a robot")
+
+# Set once, for the lifetime of this process, the first time a search
+# response turns out to be an anti-bot challenge page rather than real
+# results -- confirmed directly: a burst of automated requests during
+# heavy same-day testing got this exact IP served an "Anubis"
+# proof-of-work challenge page by Startpage (no result links, no <title>,
+# the raw HTML containing "anubis_challenge") instead of search results.
+# Once that's happened once, every following query in the SAME run would
+# just hit the same wall -- there is no per-query recovery, and continuing
+# to hammer it only prolongs the block. A restart clears this (a fresh
+# process might get a fresh IP-reputation window, or the block may simply
+# have expired by then).
+_search_blocked = False
+
+
+def _looks_like_search_block(html: str) -> bool:
+    lowered = html.lower()
+    return any(marker in lowered for marker in _SEARCH_BLOCK_MARKERS)
+
+
+def _search_web(query: str, max_results: int = MAX_SEARCH_RESULTS_PER_QUERY) -> list[str] | None:
+    """Free, no-key web search -- the only realistic way to reach a
+    voivodeship/powiat/gmina/local-news page about one specific school.
+    This is scraping a search results page, not a real API: a layout
+    change or rate limit just yields fewer or no links, never an
+    exception that fails the whole enrichment. Returns `None` (distinct
+    from `[]`) when the response itself is an anti-bot challenge rather
+    than real results -- "we got blocked" is a different, honest outcome
+    from "we searched and genuinely found nothing", and conflating the two
+    (as this used to) makes a systemic block look like 38 unrelated
+    schools each independently having no web presence.
+
+    BUG FIX: this used to hit DuckDuckGo's HTML endpoint
+    (html.duckduckgo.com/html/), which is a genuine, permanent dead end in
+    this environment -- confirmed directly (both from the host and from
+    inside the container): a raw TCP connection to that host times out,
+    while general internet access and DNS resolution both work fine, and
+    its "lite" endpoint (a different DuckDuckGo host) is reachable but
+    always serves an image CAPTCHA to a plain requests-based fetch, which
+    isn't something this scraper should try to solve. Startpage's plain
+    HTML results page, by contrast, is reachable and CAPTCHA-free for a
+    single ordinary GET at LOW volume -- confirmed directly against
+    several of the schools this same search step used to come up empty
+    for (e.g. it surfaced PUBLICZNA SZKOŁA PODSTAWOWA NR 1 W PRUDNIKU's
+    real site, zsp1prudnik.pl, on the first try). No account or API key
+    needed -- but, confirmed directly the same day, sustained automated
+    use is enough to get it to challenge-wall this IP the same way
+    DuckDuckGo already does, just at a higher request-volume threshold."""
+    global _search_blocked
+    if _search_blocked:
+        return None
     try:
         resp = requests.get(
-            "https://html.duckduckgo.com/html/",
-            params={"q": query},
+            "https://www.startpage.com/sp/search",
+            params={"query": query},
             timeout=10,
             headers={"User-Agent": USER_AGENT},
         )
@@ -801,11 +1319,18 @@ def _search_duckduckgo(query: str, max_results: int = MAX_SEARCH_RESULTS_PER_QUE
     except requests.RequestException:
         return []
 
-    soup = BeautifulSoup(resp.text, "html.parser")
+    search_text = _decoded_text(resp)
+    if _looks_like_search_block(search_text):
+        _search_blocked = True
+        return None
+
+    soup = BeautifulSoup(search_text, "html.parser")
     links: list[str] = []
-    for a in soup.select("a.result__a"):
+    seen: set[str] = set()
+    for a in soup.select("a.result-link"):
         href = a.get("href")
-        if href and href.startswith(("http://", "https://")):
+        if href and href.startswith(("http://", "https://")) and href not in seen:
+            seen.add(href)
             links.append(href)
         if len(links) >= max_results:
             break
@@ -935,7 +1460,95 @@ def _scrape_with_browser(homepage: str, school_name: str, result: dict, sources_
     return rendered_any
 
 
-def scrape_school_website(school_name: str, city: str | None, website_url: str | None) -> dict:
+# RSPO's own "website" field is sometimes blank even when its "email"
+# field isn't -- confirmed directly on real schools whose only remaining
+# clue to a working site was their own email's domain. A shared public
+# mailbox provider tells us nothing about the school's own site, so those
+# are excluded up front rather than tried and predictably rejected.
+_GENERIC_EMAIL_DOMAINS = frozenset({
+    "gmail.com", "wp.pl", "onet.pl", "interia.pl", "o2.pl", "poczta.fm",
+    "yahoo.com", "outlook.com", "hotmail.com", "op.pl", "tlen.pl", "vp.pl",
+})
+
+# A candidate domain from an email is NOT trusted blindly -- confirmed
+# directly: a school's own email used its GMINA's domain (its mail is
+# just hosted there), and that domain's real homepage is the town hall's
+# own site ("Strona główna - Urząd Miejski w Kietrzu"), not the school's.
+# Checking for a municipal-office signal (reject) vs. an actual
+# school/kindergarten/education-institution signal (accept) is the same
+# distinction a human glancing at the page would make.
+_MUNICIPAL_TITLE_KEYWORDS = ("urząd", "urzad", "gmina", "starostwo powiatowe")
+# BUG FIX: "Zespół Placówek Oświatowych" (ZPO) -- a multi-institution
+# complex umbrella term as legitimate and common as "Zespół Szkół"/"Zespół
+# Szkolno-Przedszkolny", just naming itself by the broader "placówek
+# oświatowych" (educational institutions/facilities) rather than "szkół"
+# specifically -- wasn't covered at all, confirmed directly:
+# "Zespół Placówek Oświatowych nr 3 w Działdowie" (that complex's own,
+# entirely genuine title) matched none of the keywords below and got
+# rejected as "not a school site".
+_SCHOOL_TITLE_KEYWORDS = (
+    "szkoł", "szkol", "przedszkol", "zespół szkó", "zespol szko", "liceum", "technikum", "gimnazjum",
+    "placówek oświatow", "placowek oswiatow",
+)
+
+
+def _verify_school_site(html: str) -> bool:
+    """BUG FIX: the <title> alone is often too generic to tell anything
+    from at all -- confirmed directly: a real school's own homepage had
+    the bare title "Strona Główna" ("Home Page"), which matches neither
+    keyword list, only failing verification here even though its own
+    <meta name="keywords"> plainly named the school ("... Publiczna
+    Szkoła Podstawowa nr 28 ..."). Meta description/keywords and a slice
+    of the page's own visible text are checked too, for exactly the
+    signal a human would find by actually reading the page rather than
+    just glancing at the browser tab.
+
+    BUG FIX: a real school's own site routinely links to its local
+    "Urząd Miejski"/gmina site in its nav or footer -- an ordinary
+    courtesy link, not a sign this IS the municipal site -- confirmed
+    directly: a genuine "Zespół Szkolno-Przedszkolny w Bisztynku" homepage
+    (title says so outright) got rejected outright purely because its own
+    footer also happened to mention "Urząd Miejski w Bisztynku". The
+    municipal veto below is only meant for a page that DOESN'T otherwise
+    read as a school at all (e.g. a gmina homepage with no school
+    keyword anywhere) -- so a school keyword found in the <title>
+    specifically (a page's own clear self-description, far less noisy
+    than its full nav/footer) is checked FIRST and short-circuits the
+    veto entirely."""
+    soup = BeautifulSoup(html, "html.parser")
+    # re.sub(r"\s+", ...) also normalizes a non-breaking space (\xa0) to a
+    # plain one -- needed here too since a couple of these keywords are
+    # two-word phrases ("placówek oświatow", "zespół szkó") that a
+    # real title could join with "&nbsp;" the same way _find_subpage_links
+    # confirmed a nav label does.
+    title = re.sub(r"\s+", " ", soup.title.get_text()) if soup.title else ""
+    title_lower = title.lower()
+    if any(kw in title_lower for kw in _SCHOOL_TITLE_KEYWORDS):
+        return True
+    meta_bits = [
+        tag.get("content", "")
+        for tag in soup.find_all("meta")
+        if tag.get("name", "").lower() in ("keywords", "description")
+    ]
+    body_text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))[:1500]
+    haystack = " ".join([title, *meta_bits, body_text]).lower()
+    if any(kw in haystack for kw in _MUNICIPAL_TITLE_KEYWORDS):
+        return False
+    return any(kw in haystack for kw in _SCHOOL_TITLE_KEYWORDS)
+
+
+def _derive_website_from_email(email: str | None) -> str | None:
+    if not email or "@" not in email:
+        return None
+    domain = email.rsplit("@", 1)[1].strip().lower()
+    if not domain or domain in _GENERIC_EMAIL_DOMAINS:
+        return None
+    return f"http://{domain}"
+
+
+def scrape_school_website(
+    school_name: str, website_url: str | None, rspo_email: str | None = None
+) -> dict:
     result = {
         "director_name": None,
         "english_teacher_name": None,
@@ -971,6 +1584,22 @@ def scrape_school_website(school_name: str, city: str | None, website_url: str |
         if not result["all_emails"] and found.get("email_cloak_detected"):
             result["email_cloak_detected"] = True
 
+    # 0. No website on file anywhere (neither our own record nor RSPO's)
+    # -- before falling all the way through to a web search, try the
+    # school's own email domain as one last structured guess. Verified
+    # before being trusted (see _verify_school_site): a wrong guess here
+    # would otherwise get silently recorded as this school's own site.
+    if not website_url:
+        candidate = _derive_website_from_email(rspo_email)
+        if candidate:
+            candidate_html = fetch_page(candidate)
+            if candidate_html and _verify_school_site(candidate_html):
+                sources_checked.append({"url": candidate, "status": "ok", "derived_from_email": True})
+                website_url = candidate
+                result["discovered_website_url"] = candidate
+            else:
+                sources_checked.append({"url": candidate, "status": "unreachable", "derived_from_email": True})
+
     # 1. The school's own website: homepage, then same-site subpages,
     # prioritized (BIP > staff listings > kontakt > generic "about"). This
     # can go more than one hop deep -- a BIP link is almost never on the
@@ -990,9 +1619,60 @@ def scrape_school_website(school_name: str, city: str | None, website_url: str |
 
         html = fetch_page(homepage)
         pages_fetched += 1
+
+        # BUG FIX: a real, non-empty website_url isn't always the
+        # SCHOOL's own site -- confirmed directly: RSPO's own "website"
+        # field for one school pointed at the local town's generic
+        # homepage ("Urząd Miejski w Orzyszu") instead of the school's
+        # own site. Every guessed "kontakt"/"dyrekcja"/"kadra" slug on
+        # that domain resolved fine (200 OK, since a town site has its
+        # own such pages too), silently burning the entire crawl budget
+        # on the MAYOR's office rather than the school -- a wrong-site
+        # false negative, not a missing-website one. The same
+        # title/meta/body-text check already used for an email-derived
+        # candidate (_verify_school_site) catches this just as well
+        # applied to a GIVEN url; failing it here is treated exactly like
+        # "no website was on file" -- falls through to the same
+        # email-derived candidate this function already tries in that
+        # case, rather than trusting the wrong site's own content.
+        wrong_site = html is not None and not _verify_school_site(html)
+        if wrong_site:
+            sources_checked.append({"url": homepage, "status": "not_a_school_site"})
+            html = None
+            candidate = _derive_website_from_email(rspo_email)
+            if candidate and _dedup_key(candidate) != _dedup_key(homepage):
+                candidate_html = fetch_page(candidate)
+                pages_fetched += 1
+                if candidate_html and _verify_school_site(candidate_html):
+                    sources_checked.append({"url": candidate, "status": "ok", "derived_from_email": True})
+                    homepage = _normalize_url(candidate)
+                    effective_homepage = homepage
+                    visited = {_dedup_key(homepage)}
+                    html = candidate_html
+                    result["discovered_website_url"] = candidate
+                else:
+                    sources_checked.append({"url": candidate, "status": "unreachable", "derived_from_email": True})
+
         if html:
-            sources_checked.append({"url": homepage, "status": "ok"})
-        else:
+            if not wrong_site:
+                sources_checked.append({"url": homepage, "status": "ok"})
+                migrated_domain = _detect_domain_migration(BeautifulSoup(html, "html.parser"), effective_homepage)
+                if migrated_domain:
+                    migrated_url = f"https://{migrated_domain}"
+                    migrated_html = fetch_page(migrated_url)
+                    pages_fetched += 1
+                    if migrated_html and _verify_school_site(migrated_html):
+                        sources_checked.append({"url": migrated_url, "status": "ok", "domain_migration": True})
+                        homepage = _normalize_url(migrated_url)
+                        effective_homepage = homepage
+                        visited = {_dedup_key(homepage)}
+                        html = migrated_html
+                        result["discovered_website_url"] = migrated_url
+                    else:
+                        sources_checked.append(
+                            {"url": migrated_url, "status": "unreachable", "domain_migration": True}
+                        )
+        elif not wrong_site:
             sources_checked.append({"url": homepage, "status": "unreachable"})
             # NOTE: deliberately NOT gated on `_dedup_key(variant) not in
             # visited` -- _dedup_key() treats www/non-www as the same page
@@ -1000,17 +1680,39 @@ def scrape_school_website(school_name: str, city: str | None, website_url: str |
             # here the homepage fetch just failed outright, so nothing
             # was actually retrieved under that key yet. This is a single,
             # bounded retry, not part of the general "already seen" check.
-            variant = _hostname_fallback_variant(homepage)
-            if variant and variant != homepage and pages_fetched < MAX_SAME_SITE_PAGES:
+            for variant in _hostname_fallback_variants(homepage):
+                if variant == homepage or pages_fetched >= MAX_SAME_SITE_PAGES:
+                    continue
                 variant_html = fetch_page(variant)
                 pages_fetched += 1
+                # BUG FIX: a fallback hostname resolving at all doesn't
+                # mean it's this school's site -- confirmed directly:
+                # radzanow.edu.pl (the www-stripped fallback for a school
+                # whose "www." address had lapsed) resolves to a HOSTING
+                # PROVIDER'S OWN domain-parking page ("home.pl: Nr 1 w
+                # Polsce. Domeny, Hosting...", served identically for
+                # every path, including the guessed "/dyrekcja" and
+                # "/kadra" slugs) -- a registration that expired outright,
+                # not a real site under a different address. The main
+                # homepage fetch already runs _verify_school_site before
+                # being trusted; this fallback variant skipped that same
+                # check entirely, on a guess that's if anything MORE
+                # likely to land somewhere unrelated than the original.
+                if variant_html and not _verify_school_site(variant_html):
+                    sources_checked.append(
+                        {"url": variant, "status": "not_a_school_site", "hostname_fallback": True}
+                    )
+                    continue
                 if variant_html:
                     sources_checked.append({"url": variant, "status": "ok", "hostname_fallback": True})
                     html = variant_html
                     effective_homepage = variant
                     visited.add(_dedup_key(effective_homepage))
-                else:
-                    sources_checked.append({"url": variant, "status": "unreachable", "hostname_fallback": True})
+                    break
+                sources_checked.append({"url": variant, "status": "unreachable", "hostname_fallback": True})
+        # else: wrong_site with no better candidate found -- already fully
+        # recorded above (not_a_school_site + the failed candidate attempt,
+        # if any).
 
         # A plain fetch that failed here is very often NOT a dead site -- a
         # transient blip in a batch, an anti-bot 403 that blocks our
@@ -1018,7 +1720,17 @@ def scrape_school_website(school_name: str, city: str | None, website_url: str |
         # "unreachable" school sites returned HTTP 200 on a later recheck.
         # The headless-browser fallback (a real Chrome) is retried on these
         # below, exactly as for a JS shell.
-        homepage_unreachable = html is None
+        #
+        # BUG FIX: that retry must NEVER fire for a CONFIRMED wrong site
+        # (wrong_site True, no replacement candidate found) -- confirmed
+        # directly: without this guard, `effective_homepage` still pointed
+        # at the known-wrong site (an ad agency's own homepage, in one
+        # real case), so the "unreachable, try a real browser" fallback
+        # below re-rendered and re-extracted from that SAME wrong site
+        # right after it had just been correctly rejected, defeating the
+        # whole point of the check above.
+        homepage_confirmed_wrong = wrong_site and html is None
+        homepage_unreachable = html is None and not homepage_confirmed_wrong
 
         if html:
             found = _extract(html, effective_homepage, school_name)
@@ -1049,7 +1761,52 @@ def scrape_school_website(school_name: str, city: str | None, website_url: str |
                 frontier.extend(found["subpage_links"])
                 if not found["subpage_links"]:
                     base = effective_homepage.rstrip("/")
-                    frontier.extend((1, f"{base}/{slug}") for slug in COMMON_PROBE_SLUGS)
+                    frontier.extend(
+                        (0, f"{base}/{slug}") for slug in _level_hub_slugs_for(school_name)
+                    )
+                    # A blind guess must never outrank a genuinely
+                    # discovered link -- confirmed directly: queuing these
+                    # at the same tier as real "kadra"/"dyrektor" matches
+                    # meant that once a guessed hub slug (e.g. /liceum)
+                    # landed and surfaced ITS OWN real, same-tier "Kadra"
+                    # link, the earlier-queued root-level guesses (tied on
+                    # tier, so ordered first by insertion) got visited
+                    # first and burned the whole crawl budget before the
+                    # real link was ever reached. _GUESS_TIER sits below
+                    # every real keyword tier so any genuine match always
+                    # wins ties, no matter when it's discovered.
+                    frontier.extend((_GUESS_TIER, f"{base}/{slug}") for slug in COMMON_PROBE_SLUGS)
+
+            # Cross-domain chooser-hub check -- independent of the
+            # tier/label system above, so it's worth trying regardless of
+            # whether is_hub_page's own (same-registrable-domain-only)
+            # detection found anything. Verified by the destination's own
+            # content before being trusted, so it's safe even when the
+            # label-based checks above found nothing at all to go on.
+            for candidate in _find_hub_candidates(BeautifulSoup(html, "html.parser"), effective_homepage):
+                if pages_fetched >= MAX_SAME_SITE_PAGES:
+                    break
+                time.sleep(REQUEST_DELAY_SECONDS)
+                candidate_html = fetch_page(candidate)
+                pages_fetched += 1
+                if candidate_html and _page_matches_school(candidate_html, school_name):
+                    sources_checked.append({"url": candidate, "status": "ok", "hub_candidate_matched": True})
+                    own_school_subsite_url = candidate
+                    visited.add(_dedup_key(candidate))
+                    candidate_found = _extract(candidate_html, candidate, school_name)
+                    _merge(result, candidate_found)
+                    _note_cloak(candidate_found)
+                    frontier.extend(
+                        pair for pair in candidate_found["subpage_links"] if _dedup_key(pair[1]) not in visited
+                    )
+                    break
+                sources_checked.append(
+                    {
+                        "url": candidate,
+                        "status": "ok" if candidate_html else "unreachable",
+                        "hub_candidate_no_match": True,
+                    }
+                )
 
         while frontier and pages_fetched < MAX_SAME_SITE_PAGES and not _is_complete(result):
             frontier.sort(key=lambda pair: pair[0])
@@ -1110,26 +1867,76 @@ def scrape_school_website(school_name: str, city: str | None, website_url: str |
             if _scrape_with_browser(effective_homepage, school_name, result, sources_checked):
                 result["js_render_used"] = True
 
-    # 2. Web search fallback -- only for whatever's still missing, so a
-    # school whose own site already had everything never triggers a
-    # search at all.
+    result["sources_checked"] = sources_checked
+    return result
+
+
+def augment_with_web_search(school_name: str, city: str | None, result: dict, rspo_id: str | None = None) -> None:
+    """Web search fallback -- deliberately a SEPARATE call, not a step
+    inside scrape_school_website itself. Only ever invoked by jobs.py, and
+    only once RSPO's own registry plus the full website crawl above still
+    leave the school short of what counts as meaningfully enriched (see
+    jobs.py's _would_be_enriched) -- a genuine last resort, not something
+    that runs for every school by default. Mutates `result` in place,
+    appending to the SAME sources_checked list the crawl already built, so
+    a school whose own site already had everything never causes a single
+    search request.
+
+    The name-based query below is deliberately NOT the official RSPO name
+    wrapped in exact-match quotes -- confirmed directly against several
+    real schools: for "SZKOŁA PODSTAWOWA W GRĄDACH" and "SZKOŁA
+    PODSTAWOWA IM. MACIEJA PŁAŻYŃSKIEGO W LIGOCIE WIELKIEJ", dropping the
+    quotes surfaced each school's own real "Dyrekcja" page immediately,
+    while the quoted version found nothing at all for one of them. A real
+    page about a school very often phrases its name slightly differently
+    than RSPO's full official form (a shorter/abbreviated name, no "im.
+    <patron>", different word order) -- an exact-phrase requirement rules
+    those pages out even though they're exactly what this search is for.
+
+    The RSPO-id query is a DIFFERENT, complementary strategy -- suggested
+    directly by the user, who'd had real success with it by hand on
+    schools this same name-based search came up empty for. Confirmed
+    directly: several third-party school directories (dzieci-edu.pl,
+    szkolapodstawowa.edu.pl, dostepnemiejsce.pl, waszaedukacja.pl) key
+    their own per-institution profile pages by the bare RSPO id, either
+    literally in the URL or in the page's own visible text -- a precise,
+    near-unique search term a fuzzy name match can miss entirely when a
+    school's real site phrases its own name very differently from RSPO's
+    formal register. Tried once, first, since it's aimed at finding A
+    USABLE PAGE at all rather than one specific fact -- whatever it
+    surfaces still goes through the same _extract() as every other search
+    result, so it's harmless when the only hit is just another mirror of
+    RSPO's own already-known fields."""
+    sources_checked: list[dict] = result.setdefault("sources_checked", [])
     queries = []
+    if rspo_id:
+        queries.append(f"RSPO {rspo_id}")
     location = f" {city}" if city else ""
     if not result["director_name"]:
-        queries.append(f'"{school_name}"{location} dyrektor szkoły')
+        queries.append(f"{school_name}{location} dyrektor szkoły")
     if not result["english_teacher_name"]:
-        queries.append(f'"{school_name}"{location} nauczyciel angielskiego')
+        queries.append(f"{school_name}{location} nauczyciel angielskiego")
 
     for query in queries:
         if _is_complete(result):
             break
         time.sleep(REQUEST_DELAY_SECONDS)
-        links = _search_duckduckgo(query)
+        links = _search_web(query)
+        if links is None:
+            # Distinct from "search_returned_no_results" -- this means the
+            # search engine itself served an anti-bot challenge page, not
+            # that it genuinely has nothing on this school. Once this
+            # happens, every remaining query in this SAME process would
+            # hit the identical wall (see _search_blocked), so stop trying
+            # more queries for THIS school rather than waste further
+            # requests against a wall that isn't coming down mid-run.
+            sources_checked.append({"query": query, "status": "search_blocked"})
+            break
         if not links:
-            # Visible even when the search itself came back empty (or was
-            # blocked by DuckDuckGo's bot detection) -- "we searched and
-            # found nothing" is a different, honest outcome from "we never
-            # tried", and both must show up in sources_checked.
+            # Visible even when the search itself came back genuinely
+            # empty -- "we searched and found nothing" is a different,
+            # honest outcome from "we never tried", and both must show up
+            # in sources_checked.
             sources_checked.append({"query": query, "status": "search_returned_no_results"})
             continue
         for link in links:
@@ -1146,7 +1953,14 @@ def scrape_school_website(school_name: str, city: str | None, website_url: str |
             else:
                 sources_checked.append({"url": link, "status": "unreachable", "found_via_search": query})
 
-    result["sources_checked"] = sources_checked
+
+def finalize_scrape_result(result: dict) -> dict:
+    """Call exactly once, after scrape_school_website and (if it ran)
+    augment_with_web_search have both had their turn -- turns the working
+    all_emails/specialties sets into the stable sorted lists the rest of
+    the app expects. Kept separate from scrape_school_website itself so
+    jobs.py can insert the web-search step in between without the set
+    already having been flattened to a list out from under it."""
     result["all_emails"] = sorted(result["all_emails"])
     result["specialties"] = sorted(result["specialties"])
     return result

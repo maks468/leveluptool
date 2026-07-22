@@ -1,7 +1,12 @@
-import { useState } from "react"
+import {
+  useState,
+  type ReactNode,
+  type PointerEvent as ReactPointerEvent,
+  type DragEvent as ReactDragEvent,
+} from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Search, ArrowDown, ArrowUp, ArrowUpDown, Sparkles, X } from "lucide-react"
-import { listPipeline, listPipelineIds } from "@/api/pipeline"
+import { Search, ArrowDown, ArrowUp, ArrowUpDown, Sparkles, Download, X } from "lucide-react"
+import { listPipeline, listPipelineIds, exportPipelineCsvUrl } from "@/api/pipeline"
 import { startEnrichmentJob } from "@/api/enrichment"
 import { queryKeys } from "@/api/queryKeys"
 import { Button } from "@/components/ui/Button"
@@ -19,8 +24,14 @@ import { cn } from "@/lib/utils"
 import { PipelineFiltersBar, type PipelineFilterState, type PipelineFiltersSnapshot } from "./PipelineFiltersBar"
 import { PipelineBulkActionBar } from "./PipelineBulkActionBar"
 import { PipelineSavedViewsBar } from "./PipelineSavedViewsBar"
-
-const COLUMN_COUNT = 14
+import { PipelineColumnManager } from "./PipelineColumnManager"
+import {
+  usePipelineColumns,
+  DEFAULT_COLUMN_WIDTH,
+  DEFAULT_NAME_WIDTH,
+  type PipelineColumnKey,
+} from "../usePipelineColumns"
+import type { PipelineSchool } from "@/types/domain"
 
 const PAGE_SIZE = 100
 
@@ -29,48 +40,138 @@ const LARGE_BATCH_CONFIRM_THRESHOLD = 25
 type SortField = "name" | "city" | "students" | "score" | "stage_updated_at" | "next_action_date"
 type SortDirection = "asc" | "desc"
 
-function SortableHeader({
-  label,
-  field,
-  sortField,
-  sortDirection,
-  onSort,
-}: {
-  label: string
-  field: SortField
-  sortField: SortField
-  sortDirection: SortDirection
-  onSort: (field: SortField) => void
-}) {
-  const active = sortField === field
-  return (
-    <th className="whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2">
-      <button
-        type="button"
-        onClick={() => onSort(field)}
-        className={cn(
-          "flex items-center gap-1 font-medium",
-          active ? "text-[var(--color-text)]" : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
-        )}
-      >
-        {label}
-        {active ? (
-          sortDirection === "asc" ? (
-            <ArrowUp className="h-3 w-3" />
-          ) : (
-            <ArrowDown className="h-3 w-3" />
-          )
-        ) : (
-          <ArrowUpDown className="h-3 w-3 opacity-40" />
-        )}
-      </button>
-    </th>
-  )
-}
-
 function formatDate(iso: string | null): string {
   if (!iso) return "—"
   return new Date(iso).toLocaleDateString()
+}
+
+/** One entry per manageable column (see usePipelineColumns) -- `label` and
+ * an optional `sortField` (omit for columns that can't be sorted) drive the
+ * shared header renderer below; `cell` renders just the inner content of
+ * the row's <td> (the render loop supplies the consistent <td> wrapper).
+ * Adding a column here never means touching the render/drag/resize logic
+ * itself. */
+const COLUMN_REGISTRY: Record<
+  PipelineColumnKey,
+  { label: string; sortField?: SortField; cell: (school: PipelineSchool) => ReactNode }
+> = {
+  city: {
+    label: "City",
+    sortField: "city",
+    cell: (school) => <DataValueCell value={school.city} />,
+  },
+  director: {
+    label: "Director",
+    cell: (school) => <DataValueCell value={school.director_name} />,
+  },
+  teacher: {
+    label: "English teacher",
+    cell: (school) => <DataValueCell value={school.english_teacher_name} />,
+  },
+  website: {
+    label: "Website",
+    cell: (school) =>
+      school.website_url ? (
+        <a
+          href={school.website_url.startsWith("http") ? school.website_url : `https://${school.website_url}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="truncate text-[var(--color-accent)] hover:underline"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {school.website_url}
+        </a>
+      ) : (
+        <DataValueCell value={null} />
+      ),
+  },
+  best_email: {
+    label: "Best email",
+    cell: (school) =>
+      school.best_email ? (
+        <a
+          href={`mailto:${school.best_email}`}
+          className="text-[var(--color-accent)] hover:underline"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {school.best_email}
+        </a>
+      ) : (
+        <DataValueCell value={null} />
+      ),
+  },
+  stage: {
+    label: "Stage",
+    cell: (school) => <StagePill stage={school.stage} />,
+  },
+  students: {
+    label: "Students",
+    sortField: "students",
+    cell: (school) => <DataValueCell value={school.student_count} />,
+  },
+  score: {
+    label: "Score",
+    sortField: "score",
+    cell: (school) => <ScoreBadge score={school.score} />,
+  },
+  enrichment: {
+    label: "Enrichment",
+    cell: (school) => <EnrichmentLevelBadge level={school.enrichment_level} />,
+  },
+  next_follow_up: {
+    label: "Next follow-up",
+    sortField: "next_action_date",
+    cell: (school) => formatDate(school.next_action_date),
+  },
+  stage_updated: {
+    label: "Stage updated",
+    sortField: "stage_updated_at",
+    cell: (school) => formatDate(school.stage_updated_at),
+  },
+  added_via: {
+    label: "Added via",
+    cell: (school) => (
+      <span className="block max-w-[220px] truncate" title={school.pull_criteria ?? undefined}>
+        {school.pull_criteria ?? "—"}
+      </span>
+    ),
+  },
+}
+
+/** A grabbable strip on a header's right edge -- drag it to resize that
+ * column. Pointer capture means the drag keeps tracking even if the
+ * cursor slips off the 6px strip mid-drag, which a plain mousemove
+ * listener on the handle itself wouldn't survive. stopPropagation on
+ * pointerdown keeps this from also starting the header's own
+ * drag-to-reorder gesture. */
+function ColumnResizeHandle({ width, onResize }: { width: number; onResize: (px: number) => void }) {
+  function handlePointerDown(e: ReactPointerEvent<HTMLSpanElement>) {
+    e.preventDefault()
+    e.stopPropagation()
+    const startX = e.clientX
+    const startWidth = width
+    const handle = e.currentTarget
+    handle.setPointerCapture(e.pointerId)
+
+    function handleMove(ev: PointerEvent) {
+      onResize(startWidth + (ev.clientX - startX))
+    }
+    function handleUp() {
+      window.removeEventListener("pointermove", handleMove)
+      window.removeEventListener("pointerup", handleUp)
+    }
+    window.addEventListener("pointermove", handleMove)
+    window.addEventListener("pointerup", handleUp)
+  }
+
+  return (
+    <span
+      onPointerDown={handlePointerDown}
+      onClick={(e) => e.stopPropagation()}
+      draggable={false}
+      className="absolute right-0 top-0 z-10 h-full w-1.5 cursor-col-resize select-none hover:bg-[var(--color-accent)]/50 active:bg-[var(--color-accent)]"
+    />
+  )
 }
 
 const DEFAULT_FILTERS: PipelineFilterState = {
@@ -80,6 +181,7 @@ const DEFAULT_FILTERS: PipelineFilterState = {
   scoreMin: null,
   scoreMax: null,
   scoreIncludeUnscored: true,
+  enrichmentLevel: null,
 }
 
 /** One independent, self-contained slice of the Pipeline -- its own
@@ -102,6 +204,67 @@ export function PipelinePanel({
   const [sortField, setSortField] = useState<SortField>("stage_updated_at")
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc")
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const { order: columnOrder, hidden: hiddenColumns, widths: columnWidths, reorder, setWidth } = usePipelineColumns()
+  const [draggingColumn, setDraggingColumn] = useState<PipelineColumnKey | null>(null)
+  const visibleColumns = columnOrder.filter((key) => !hiddenColumns.includes(key))
+  const columnCount = visibleColumns.length + 3 // checkbox + Name + Change-stage are always present
+  const nameWidth = columnWidths.name ?? DEFAULT_NAME_WIDTH
+  const tableWidth =
+    40 + nameWidth + visibleColumns.reduce((sum, key) => sum + (columnWidths[key] ?? DEFAULT_COLUMN_WIDTH), 0) + 140
+
+  /** The sort button shared by every sortable header (registry columns and
+   * the fixed Name column alike) -- just the button, not the <th> itself,
+   * since the two callers wrap it differently (Name is fixed-position and
+   * not draggable; registry columns are both draggable and resizable). */
+  function renderSortLabel(label: string, field: SortField) {
+    const active = sortField === field
+    return (
+      <button
+        type="button"
+        onClick={() => handleSort(field)}
+        className={cn(
+          "flex items-center gap-1 font-medium",
+          active ? "text-[var(--color-text)]" : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+        )}
+      >
+        {label}
+        {active ? (
+          sortDirection === "asc" ? (
+            <ArrowUp className="h-3 w-3" />
+          ) : (
+            <ArrowDown className="h-3 w-3" />
+          )
+        ) : (
+          <ArrowUpDown className="h-3 w-3 opacity-40" />
+        )}
+      </button>
+    )
+  }
+
+  function renderHeaderCell(key: PipelineColumnKey) {
+    const col = COLUMN_REGISTRY[key]
+    const width = columnWidths[key] ?? DEFAULT_COLUMN_WIDTH
+    return (
+      <th
+        key={key}
+        draggable
+        onDragStart={() => setDraggingColumn(key)}
+        onDragOver={(e: ReactDragEvent) => e.preventDefault()}
+        onDrop={() => {
+          if (draggingColumn) reorder(draggingColumn, key)
+          setDraggingColumn(null)
+        }}
+        onDragEnd={() => setDraggingColumn(null)}
+        className={cn(
+          "relative whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2 cursor-grab select-none active:cursor-grabbing",
+          draggingColumn === key && "opacity-40"
+        )}
+      >
+        {col.sortField ? renderSortLabel(col.label, col.sortField) : col.label}
+        <ColumnResizeHandle width={width} onResize={(px) => setWidth(key, px)} />
+      </th>
+    )
+  }
 
   const sort = `${sortField}:${sortDirection}`
   const stage = stageFilter === "all" ? undefined : stageFilter
@@ -117,6 +280,7 @@ export function PipelinePanel({
     scoreMin: filters.scoreMin,
     scoreMax: filters.scoreMax,
     scoreIncludeUnscored: filters.scoreIncludeUnscored,
+    enrichmentLevel: filters.enrichmentLevel,
     sort,
   }
 
@@ -202,6 +366,7 @@ export function PipelinePanel({
       scoreMin: snapshot.scoreMin,
       scoreMax: snapshot.scoreMax,
       scoreIncludeUnscored: snapshot.scoreIncludeUnscored,
+      enrichmentLevel: snapshot.enrichmentLevel,
     })
     if (savedSort) {
       const [field, direction] = savedSort.split(":")
@@ -253,6 +418,16 @@ export function PipelinePanel({
           <Sparkles className="h-4 w-4" />
           {enrichAllMutation.isPending ? "Enriching…" : `Enrich all${data ? ` (${data.total.toLocaleString()})` : ""}`}
         </Button>
+        <a
+          href={exportPipelineCsvUrl(queryArgs)}
+          download
+          className="inline-flex flex-shrink-0 items-center justify-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 py-2 text-sm font-medium text-[var(--color-text)] transition-colors hover:bg-slate-50 dark:hover:bg-slate-800"
+          title="Export every school matching the current filters — all pages, not just this one"
+        >
+          <Download className="h-4 w-4" />
+          Export CSV
+        </a>
+        <PipelineColumnManager />
         {enrichAllMutation.isSuccess && (
           <span className="text-sm text-green-600">Enrichment started &mdash; see the tray in the corner.</span>
         )}
@@ -276,7 +451,15 @@ export function PipelinePanel({
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)]">
         <div className="min-h-0 flex-1 overflow-auto">
-        <table className="w-full text-sm">
+        <table className="text-sm" style={{ width: tableWidth, tableLayout: "fixed" }}>
+          <colgroup>
+            <col style={{ width: 40 }} />
+            <col style={{ width: nameWidth }} />
+            {visibleColumns.map((key) => (
+              <col key={key} style={{ width: columnWidths[key] ?? DEFAULT_COLUMN_WIDTH }} />
+            ))}
+            <col style={{ width: 140 }} />
+          </colgroup>
           <thead className="sticky top-0 z-10 bg-[var(--color-surface)]">
             <tr className="text-left text-xs text-[var(--color-text-muted)]">
               <th className="whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2">
@@ -286,68 +469,25 @@ export function PipelinePanel({
                   onChange={(e) => setManySelected(pageIds, e.target.checked)}
                 />
               </th>
-              <SortableHeader
-                label="Name"
-                field="name"
-                sortField={sortField}
-                sortDirection={sortDirection}
-                onSort={handleSort}
-              />
-              <SortableHeader
-                label="City"
-                field="city"
-                sortField={sortField}
-                sortDirection={sortDirection}
-                onSort={handleSort}
-              />
-              <th className="whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2">Director</th>
-              <th className="whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2">English teacher</th>
-              <th className="whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2">Best email</th>
-              <th className="whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2">Stage</th>
-              <SortableHeader
-                label="Students"
-                field="students"
-                sortField={sortField}
-                sortDirection={sortDirection}
-                onSort={handleSort}
-              />
-              <SortableHeader
-                label="Score"
-                field="score"
-                sortField={sortField}
-                sortDirection={sortDirection}
-                onSort={handleSort}
-              />
-              <th className="whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2">Enrichment</th>
-              <SortableHeader
-                label="Next follow-up"
-                field="next_action_date"
-                sortField={sortField}
-                sortDirection={sortDirection}
-                onSort={handleSort}
-              />
-              <SortableHeader
-                label="Stage updated"
-                field="stage_updated_at"
-                sortField={sortField}
-                sortDirection={sortDirection}
-                onSort={handleSort}
-              />
-              <th className="whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2">Added via</th>
+              <th className="relative whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2">
+                {renderSortLabel("Name", "name")}
+                <ColumnResizeHandle width={nameWidth} onResize={(px) => setWidth("name", px)} />
+              </th>
+              {visibleColumns.map(renderHeaderCell)}
               <th className="whitespace-nowrap border-b border-[var(--color-border)] px-3 py-2">Change stage</th>
             </tr>
           </thead>
           <tbody>
             {isLoading && (
               <tr>
-                <td colSpan={COLUMN_COUNT} className="px-3 py-6 text-center text-[var(--color-text-muted)]">
+                <td colSpan={columnCount} className="px-3 py-6 text-center text-[var(--color-text-muted)]">
                   Loading&hellip;
                 </td>
               </tr>
             )}
             {!isLoading && schools.length === 0 && (
               <tr>
-                <td colSpan={COLUMN_COUNT} className="px-3 py-6 text-center text-[var(--color-text-muted)]">
+                <td colSpan={columnCount} className="px-3 py-6 text-center text-[var(--color-text-muted)]">
                   No pipeline schools match this filter.
                 </td>
               </tr>
@@ -368,7 +508,7 @@ export function PipelinePanel({
                   />
                 </td>
                 <td
-                  className="cursor-pointer whitespace-nowrap border-r border-[var(--color-border)] px-3 py-1.5 font-medium"
+                  className="cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap border-r border-[var(--color-border)] px-3 py-1.5 font-medium"
                   title={school.name}
                   onClick={() => setSelectedId(school.id)}
                 >
@@ -379,51 +519,14 @@ export function PipelinePanel({
                     </Badge>
                   )}
                 </td>
-                <td className="whitespace-nowrap border-r border-[var(--color-border)] px-3 py-1.5">
-                  <DataValueCell value={school.city} />
-                </td>
-                <td className="whitespace-nowrap border-r border-[var(--color-border)] px-3 py-1.5">
-                  <DataValueCell value={school.director_name} />
-                </td>
-                <td className="whitespace-nowrap border-r border-[var(--color-border)] px-3 py-1.5">
-                  <DataValueCell value={school.english_teacher_name} />
-                </td>
-                <td className="whitespace-nowrap border-r border-[var(--color-border)] px-3 py-1.5">
-                  {school.best_email ? (
-                    <a
-                      href={`mailto:${school.best_email}`}
-                      className="text-[var(--color-accent)] hover:underline"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {school.best_email}
-                    </a>
-                  ) : (
-                    <DataValueCell value={null} />
-                  )}
-                </td>
-                <td className="whitespace-nowrap border-r border-[var(--color-border)] px-3 py-1.5">
-                  <StagePill stage={school.stage} />
-                </td>
-                <td className="whitespace-nowrap border-r border-[var(--color-border)] px-3 py-1.5">
-                  <DataValueCell value={school.student_count} />
-                </td>
-                <td className="whitespace-nowrap border-r border-[var(--color-border)] px-3 py-1.5">
-                  <ScoreBadge score={school.score} />
-                </td>
-                <td className="whitespace-nowrap border-r border-[var(--color-border)] px-3 py-1.5">
-                  <EnrichmentLevelBadge level={school.enrichment_level} />
-                </td>
-                <td className="whitespace-nowrap border-r border-[var(--color-border)] px-3 py-1.5 text-[var(--color-text-muted)]">
-                  {formatDate(school.next_action_date)}
-                </td>
-                <td className="whitespace-nowrap border-r border-[var(--color-border)] px-3 py-1.5 text-[var(--color-text-muted)]">
-                  {formatDate(school.stage_updated_at)}
-                </td>
-                <td className="border-r border-[var(--color-border)] px-3 py-1.5 text-xs text-[var(--color-text-muted)]">
-                  <span className="block max-w-[220px] truncate" title={school.pull_criteria ?? undefined}>
-                    {school.pull_criteria ?? "—"}
-                  </span>
-                </td>
+                {visibleColumns.map((key) => (
+                  <td
+                    key={key}
+                    className="overflow-hidden text-ellipsis whitespace-nowrap border-r border-[var(--color-border)] px-3 py-1.5"
+                  >
+                    {COLUMN_REGISTRY[key].cell(school)}
+                  </td>
+                ))}
                 <td className="whitespace-nowrap px-3 py-1.5">
                   <select
                     className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-xs"

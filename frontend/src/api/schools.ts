@@ -73,6 +73,14 @@ export async function countSchools(filters: LibraryFilters): Promise<number> {
   return count
 }
 
+/** Every school id matching the given filters, across every page -- lets
+ * "select all N matching my filters" act on the whole filtered set rather
+ * than just whatever's on the current page. */
+export async function listSchoolIds(filters: LibraryFilters): Promise<number[]> {
+  const { ids } = await api.get<{ ids: number[] }>(`/schools/ids${toQueryString(filtersToParams(filters))}`)
+  return ids
+}
+
 export async function getSchool(id: number): Promise<School> {
   return api.get<School>(`/schools/${id}`)
 }

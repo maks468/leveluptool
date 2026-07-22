@@ -216,6 +216,7 @@ class EnrichmentJobOut(BaseModel):
     status: str
     requested_at: datetime
     is_automatic: bool
+    cancel_requested: bool
     items: list[EnrichmentJobItemOut]
 
     @field_serializer("requested_at")

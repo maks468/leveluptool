@@ -370,6 +370,50 @@ def count_schools(
     return {"count": query.count()}
 
 
+@router.get("/ids")
+def list_school_ids(
+    session: Session = Depends(get_session),
+    voivodeship: str | None = None,
+    city: str | None = None,
+    school_type: str | None = None,
+    ownership_public: bool = True,
+    ownership_private: bool = True,
+    ownership_subtype: str | None = None,
+    ownership_include_unverified: bool = True,
+    students_min: int | None = None,
+    students_max: int | None = None,
+    students_include_unknown: bool = True,
+    score_min: int | None = None,
+    score_max: int | None = None,
+    score_include_unscored: bool = True,
+    include_adult_education: bool = True,
+    special_needs: str = "all",
+):
+    """Every school id matching the given filters, across every page --
+    lets the Library's "select all N matching my filters" checkbox act on
+    the whole filtered set (e.g. hand-picking 200 schools spread over 4
+    pages) rather than only whatever's on the current page."""
+    query = _apply_filters(
+        _base_query(session).with_entities(School.id),
+        voivodeship=voivodeship,
+        city=city,
+        school_type=school_type,
+        ownership_public=ownership_public,
+        ownership_private=ownership_private,
+        ownership_subtype=ownership_subtype,
+        ownership_include_unverified=ownership_include_unverified,
+        students_min=students_min,
+        students_max=students_max,
+        students_include_unknown=students_include_unknown,
+        score_min=score_min,
+        score_max=score_max,
+        score_include_unscored=score_include_unscored,
+        include_adult_education=include_adult_education,
+        special_needs=special_needs,
+    )
+    return {"ids": [row[0] for row in query.all()]}
+
+
 @router.get("/export")
 def export_schools_csv(
     session: Session = Depends(get_session),

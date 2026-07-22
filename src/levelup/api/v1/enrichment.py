@@ -11,7 +11,7 @@ from levelup.models.enrichment import EnrichmentJob, EnrichmentJobItem
 from levelup.models.school import School
 from levelup.models.score import CurrentScore, SchoolScore
 from levelup.models.user import User
-from levelup.services.enrichment.jobs import create_job, run_job
+from levelup.services.enrichment.jobs import cancel_job, create_job, run_job
 
 router = APIRouter(prefix="/enrichment-jobs", tags=["enrichment"])
 
@@ -61,6 +61,17 @@ def list_jobs(session: Session = Depends(get_session), status: str | None = None
 
 @router.get("/{job_id}", response_model=EnrichmentJobOut)
 def get_job(job_id: int, session: Session = Depends(get_session)):
+    return (
+        session.query(EnrichmentJob)
+        .options(joinedload(EnrichmentJob.items).joinedload(EnrichmentJobItem.school))
+        .filter_by(id=job_id)
+        .one()
+    )
+
+
+@router.post("/{job_id}/cancel", response_model=EnrichmentJobOut)
+def cancel_enrichment_job(job_id: int, session: Session = Depends(get_session)):
+    cancel_job(session, job_id)
     return (
         session.query(EnrichmentJob)
         .options(joinedload(EnrichmentJob.items).joinedload(EnrichmentJobItem.school))

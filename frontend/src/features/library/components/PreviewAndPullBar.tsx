@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
-import { Search, ArrowRightCircle, CheckSquare, Sparkles, Download } from "lucide-react"
-import { countSchools } from "@/api/schools"
+import { Search, ArrowRightCircle, CheckSquare, CheckSquare2, Sparkles, Download } from "lucide-react"
+import { countSchools, listSchoolIds } from "@/api/schools"
 import { pullIntoPipeline } from "@/api/pipeline"
 import { startEnrichmentJob, startEnrichmentJobFromFilters } from "@/api/enrichment"
 import { exportSchoolsCsvUrl } from "@/api/crm"
@@ -14,7 +14,7 @@ const LARGE_BATCH_CONFIRM_THRESHOLD = 25
 
 export function PreviewAndPullBar() {
   const { filters, sort, previewedCount, setPreviewedCount } = useLibraryFilters()
-  const { selectedIds, clear: clearSelection } = useLibrarySelection()
+  const { selectedIds, setMany, clear: clearSelection } = useLibrarySelection()
   const [limit, setLimit] = useState<string>("")
   const [result, setResult] = useState<{ pulled_new: number; already_in_pipeline: number } | null>(null)
   const queryClient = useQueryClient()
@@ -22,6 +22,16 @@ export function PreviewAndPullBar() {
   const previewMutation = useMutation({
     mutationFn: () => countSchools(filters),
     onSuccess: (count) => setPreviewedCount(count),
+  })
+
+  // Checkbox selection in the table below is scoped to whatever's on the
+  // current page -- this resolves every id matching the current filters
+  // server-side first (same query the count/pull/export actions already
+  // use) and checks all of them at once, so hand-picking e.g. 200 schools
+  // spread across 4 pages doesn't mean re-clicking "select all" 4 times.
+  const selectAllMatchingMutation = useMutation({
+    mutationFn: () => listSchoolIds(filters),
+    onSuccess: (ids) => setMany(ids, true),
   })
 
   const pullMutation = useMutation({
@@ -130,6 +140,15 @@ export function PreviewAndPullBar() {
       </Button>
 
       <span className="h-6 w-px bg-[var(--color-border)]" />
+
+      <Button
+        disabled={previewedCount === null || selectAllMatchingMutation.isPending}
+        onClick={() => selectAllMatchingMutation.mutate()}
+        title={previewedCount === null ? "Run Preview count first" : "Check every school matching the current filters, across all pages"}
+      >
+        <CheckSquare2 className="h-4 w-4" />
+        Select all matching{previewedCount !== null && ` (${previewedCount.toLocaleString()})`}
+      </Button>
 
       <Button
         variant="primary"

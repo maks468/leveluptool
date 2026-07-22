@@ -23,7 +23,9 @@ export function useRecentEnrichmentJobs() {
   // unrelated refetch happens to pick up the change.
   useEffect(() => {
     const jobs = query.data ?? []
-    const newlyDone = jobs.filter((j) => j.status === "done" && !notifiedDoneIds.current.has(j.id))
+    const newlyDone = jobs.filter(
+      (j) => (j.status === "done" || j.status === "cancelled") && !notifiedDoneIds.current.has(j.id)
+    )
     if (newlyDone.length === 0) return
     newlyDone.forEach((j) => notifiedDoneIds.current.add(j.id))
     queryClient.invalidateQueries({ queryKey: ["school"] })

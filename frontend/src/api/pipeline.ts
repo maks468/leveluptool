@@ -1,6 +1,7 @@
-import { api } from "./client"
+import { api, API_BASE_URL } from "./client"
 import type {
   ActivityLogEntry,
+  EnrichmentLevel,
   LibraryFilters,
   MapSchool,
   PipelineListResponse,
@@ -21,41 +22,12 @@ export interface PipelineQueryArgs {
   scoreMin?: number | null
   scoreMax?: number | null
   scoreIncludeUnscored?: boolean
+  enrichmentLevel?: EnrichmentLevel | null
   sort?: string
 }
 
-export async function listPipeline(args: PipelineQueryArgs = {}): Promise<PipelineListResponse> {
-  const {
-    page = 1,
-    pageSize = 50,
-    stage,
-    q,
-    voivodeship,
-    city,
-    tagId,
-    scoreMin,
-    scoreMax,
-    scoreIncludeUnscored = true,
-    sort,
-  } = args
-  const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
-  if (stage) params.set("stage", stage)
-  if (q) params.set("q", q)
-  if (voivodeship) params.set("voivodeship", voivodeship)
-  if (city) params.set("city", city)
-  if (tagId !== null && tagId !== undefined) params.set("tag_id", String(tagId))
-  if (scoreMin !== null && scoreMin !== undefined) params.set("score_min", String(scoreMin))
-  if (scoreMax !== null && scoreMax !== undefined) params.set("score_max", String(scoreMax))
-  params.set("score_include_unscored", String(scoreIncludeUnscored))
-  if (sort) params.set("sort", sort)
-  return api.get<PipelineListResponse>(`/pipeline?${params.toString()}`)
-}
-
-/** All school ids in the pipeline matching these filters, across every
- * page -- so an action can cover the whole filtered view (e.g. "enrich
- * all") rather than just the schools on the current page. */
-export async function listPipelineIds(args: PipelineQueryArgs = {}): Promise<number[]> {
-  const { stage, q, voivodeship, city, tagId, scoreMin, scoreMax, scoreIncludeUnscored = true } = args
+function pipelineQueryParams(args: PipelineQueryArgs): URLSearchParams {
+  const { stage, q, voivodeship, city, tagId, scoreMin, scoreMax, scoreIncludeUnscored = true, enrichmentLevel } = args
   const params = new URLSearchParams()
   if (stage) params.set("stage", stage)
   if (q) params.set("q", q)
@@ -65,8 +37,35 @@ export async function listPipelineIds(args: PipelineQueryArgs = {}): Promise<num
   if (scoreMin !== null && scoreMin !== undefined) params.set("score_min", String(scoreMin))
   if (scoreMax !== null && scoreMax !== undefined) params.set("score_max", String(scoreMax))
   params.set("score_include_unscored", String(scoreIncludeUnscored))
+  if (enrichmentLevel) params.set("enrichment_level", enrichmentLevel)
+  return params
+}
+
+export async function listPipeline(args: PipelineQueryArgs = {}): Promise<PipelineListResponse> {
+  const { page = 1, pageSize = 50, sort } = args
+  const params = pipelineQueryParams(args)
+  params.set("page", String(page))
+  params.set("page_size", String(pageSize))
+  if (sort) params.set("sort", sort)
+  return api.get<PipelineListResponse>(`/pipeline?${params.toString()}`)
+}
+
+/** All school ids in the pipeline matching these filters, across every
+ * page -- so an action can cover the whole filtered view (e.g. "enrich
+ * all") rather than just the schools on the current page. */
+export async function listPipelineIds(args: PipelineQueryArgs = {}): Promise<number[]> {
+  const params = pipelineQueryParams(args)
   const { ids } = await api.get<{ ids: number[] }>(`/pipeline/ids?${params.toString()}`)
   return ids
+}
+
+/** CSV export is a plain navigation (not a fetch call) so the browser
+ * handles the Content-Disposition download itself -- same pattern as the
+ * Library's exportSchoolsCsvUrl. */
+export function exportPipelineCsvUrl(args: PipelineQueryArgs = {}): string {
+  const params = pipelineQueryParams(args)
+  if (args.sort) params.set("sort", args.sort)
+  return `${API_BASE_URL}/pipeline/export?${params.toString()}`
 }
 
 export async function pullIntoPipeline(

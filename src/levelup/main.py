@@ -7,7 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from levelup.api.v1.router import router as api_v1_router
+from levelup.core.db import SessionLocal
 from levelup.services.enrichment.auto_enrich import start_auto_enrich_thread, stop_auto_enrich_thread
+from levelup.services.enrichment.jobs import reap_orphaned_jobs
 
 # Built frontend (npm run build -> frontend/dist). When present, FastAPI
 # serves it same-origin so the whole app is one process on one port -- no
@@ -21,6 +23,11 @@ FRONTEND_DIST = Path(os.environ.get("LEVELUP_FRONTEND_DIST", _DEFAULT_DIST))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    session = SessionLocal()
+    try:
+        reap_orphaned_jobs(session)
+    finally:
+        session.close()
     start_auto_enrich_thread()
     yield
     stop_auto_enrich_thread()

@@ -2,7 +2,10 @@ import { useQuery } from "@tanstack/react-query"
 import { listCities, listVoivodeships } from "@/api/schools"
 import { listTags } from "@/api/crm"
 import { queryKeys } from "@/api/queryKeys"
-import { PIPELINE_STAGES, STAGE_LABELS, type PipelineStage } from "@/types/domain"
+import { ENRICHMENT_LEVEL_CONFIG } from "@/components/shared/EnrichmentLevelBadge"
+import { PIPELINE_STAGES, STAGE_LABELS, type EnrichmentLevel, type PipelineStage } from "@/types/domain"
+
+const ENRICHMENT_LEVELS: EnrichmentLevel[] = ["not_enriched", "basic", "partial", "successful"]
 
 export interface PipelineFilterState {
   voivodeship: string | null
@@ -11,6 +14,7 @@ export interface PipelineFilterState {
   scoreMin: number | null
   scoreMax: number | null
   scoreIncludeUnscored: boolean
+  enrichmentLevel: EnrichmentLevel | null
 }
 
 /** Everything a saved Pipeline view needs to restore -- PipelineFilterState
@@ -152,18 +156,42 @@ export function PipelineFiltersBar({
         Include unscored
       </label>
 
+      <div>
+        <label className="mb-1 block text-xs font-medium text-[var(--color-text-muted)]">Enrichment</label>
+        <select
+          className="w-40 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
+          value={filters.enrichmentLevel ?? ""}
+          onChange={(e) => onChange({ enrichmentLevel: e.target.value === "" ? null : (e.target.value as EnrichmentLevel) })}
+        >
+          <option value="">Any</option>
+          {ENRICHMENT_LEVELS.map((level) => (
+            <option key={level} value={level}>
+              {ENRICHMENT_LEVEL_CONFIG[level].label}
+            </option>
+          ))}
+        </select>
+      </div>
+
       {(stage !== "all" ||
         filters.voivodeship ||
         filters.city ||
         filters.tagId !== null ||
         filters.scoreMin !== null ||
-        filters.scoreMax !== null) && (
+        filters.scoreMax !== null ||
+        filters.enrichmentLevel !== null) && (
         <button
           type="button"
           className="pb-1.5 text-xs text-[var(--color-accent)] hover:underline"
           onClick={() => {
             onStageChange("all")
-            onChange({ voivodeship: null, city: null, tagId: null, scoreMin: null, scoreMax: null })
+            onChange({
+              voivodeship: null,
+              city: null,
+              tagId: null,
+              scoreMin: null,
+              scoreMax: null,
+              enrichmentLevel: null,
+            })
           }}
         >
           Clear filters

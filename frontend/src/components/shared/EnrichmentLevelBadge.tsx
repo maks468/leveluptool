@@ -1,7 +1,7 @@
 import type { EnrichmentLevel } from "@/types/domain"
 import { Badge, type BadgeColor } from "@/components/ui/Badge"
 
-const LEVEL_CONFIG: Record<EnrichmentLevel, { label: string; color: BadgeColor }> = {
+export const ENRICHMENT_LEVEL_CONFIG: Record<EnrichmentLevel, { label: string; color: BadgeColor }> = {
   successful: { label: "Successful", color: "green" },
   partial: { label: "Partial", color: "blue" },
   basic: { label: "Basic", color: "amber" },
@@ -16,7 +16,7 @@ const LEVEL_TITLE: Record<EnrichmentLevel, string> = {
 }
 
 export function EnrichmentLevelBadge({ level }: { level: EnrichmentLevel }) {
-  const { label, color } = LEVEL_CONFIG[level]
+  const { label, color } = ENRICHMENT_LEVEL_CONFIG[level]
   return (
     <Badge color={color} variant={level === "not_enriched" ? "dashed" : "solid"} title={LEVEL_TITLE[level]}>
       {label}
