@@ -18,7 +18,6 @@ TARGET_TYPE_MAP: dict[str, SchoolLevel] = {
     "Technikum": SchoolLevel.TECHNIKUM,
     "Branżowa szkoła I stopnia": SchoolLevel.BRANZOWA_I,
     "Branżowa szkoła II stopnia": SchoolLevel.BRANZOWA_II,
-    "Szkoła policealna": SchoolLevel.POLICEALNA,
 }
 
 BRANCH_KIND = "filia szkoły lub placówki"
@@ -116,6 +115,7 @@ def map_row(row: dict) -> dict:
         is_branch=is_branch,
         has_grades_7_8=has_grades_7_8,
         website_url=(row.get("Adres www") or None),
+        website_url_source=(EvidenceSource.RSPO_STRUCTURED_FIELD if row.get("Adres www") else None),
         language_orientation=language_orientation,
         language_orientation_source=language_source,
         raw_import_row=row,

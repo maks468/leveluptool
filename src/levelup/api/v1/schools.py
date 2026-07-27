@@ -2,19 +2,31 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import and_, false, func, or_
 from sqlalchemy.orm import Session
 
-from levelup.api.v1.schemas import CityFacetOut, SchoolContactOut, SchoolListOut, SchoolOut, VoivodeshipFacetOut
+from levelup.api.v1.schemas import (
+    CityFacetOut,
+    SchoolContactOut,
+    SchoolListOut,
+    SchoolOut,
+    VoivodeshipFacetOut,
+    WebsiteUrlUpdate,
+)
 from levelup.core.db import get_session
+from levelup.core.security import get_current_user
 from levelup.models.enrichment import SchoolContact
-from levelup.models.pipeline import PipelineState
-from levelup.models.school import School
+from levelup.models.pipeline import ActivityLog, ActivityType, PipelineState
+from levelup.models.school import EvidenceSource, School
 from levelup.models.score import CurrentScore, SchoolScore
+from levelup.models.user import User
 from levelup.services.enrichment.verifier import email_priority
+
+_URL_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 router = APIRouter(prefix="/schools", tags=["schools"])
 
@@ -233,6 +245,7 @@ def _to_out(
             "is_branch": school.is_branch,
             "has_grades_7_8": school.has_grades_7_8,
             "website_url": school.website_url,
+            "website_url_source": school.website_url_source.value if school.website_url_source else None,
             "language_orientation": school.language_orientation.value if school.language_orientation else None,
             "school_profile": school.school_profile,
             "director_name": school.director_name,
@@ -542,6 +555,52 @@ def list_cities(session: Session = Depends(get_session), voivodeship: str | None
 @router.get("/{school_id}", response_model=SchoolOut)
 def get_school(school_id: int, session: Session = Depends(get_session)):
     school = session.query(School).filter_by(id=school_id).one()
+    score = (
+        session.query(SchoolScore)
+        .join(CurrentScore, CurrentScore.score_id == SchoolScore.id)
+        .filter(CurrentScore.school_id == school.id)
+        .one_or_none()
+    )
+    return _to_out(session, school, score)
+
+
+@router.patch("/{school_id}/website", response_model=SchoolOut)
+def update_school_website(
+    school_id: int,
+    body: WebsiteUrlUpdate,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """Manual override for when the scraper can't find or reach a school's
+    site on its own. Marked EvidenceSource.MANUAL so it outranks RSPO's
+    raw field on every future re-import (see upsert.py) -- a correction
+    made here is never silently reset. Doesn't run enrichment itself;
+    the frontend follows up with a normal POST /enrichment-jobs call for
+    this school so the new URL gets tried right away."""
+    school = session.query(School).filter_by(id=school_id).one_or_none()
+    if school is None:
+        raise HTTPException(404, "School not found")
+
+    url = body.website_url.strip()
+    if not url:
+        raise HTTPException(400, "website_url must not be empty")
+    if not _URL_SCHEME_RE.match(url):
+        url = f"http://{url}"
+
+    previous_url = school.website_url
+    school.website_url = url
+    school.website_url_source = EvidenceSource.MANUAL
+    session.add(
+        ActivityLog(
+            school_id=school.id,
+            actor_id=user.id,
+            activity_type=ActivityType.WEBSITE_URL_CORRECTED.value,
+            note=f"Website manually set to {url}" + (f" (was {previous_url})" if previous_url else ""),
+            metadata_json={"from": previous_url, "to": url},
+        )
+    )
+    session.commit()
+
     score = (
         session.query(SchoolScore)
         .join(CurrentScore, CurrentScore.score_id == SchoolScore.id)

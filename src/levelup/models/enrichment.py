@@ -22,6 +22,11 @@ class EnrichmentJob(Base):
     # currently-running school always finishes (never killed mid-scrape),
     # but every remaining "pending" item is skipped rather than started.
     cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Populated when the job ends "cancelled" because the shared Claude
+    # Code usage window was exhausted mid-run (see llm_extract.UsageLimitError)
+    # -- explains WHY to whoever's looking at the job tray, distinct from a
+    # cancel the user themselves requested via the Stop button.
+    error_message: Mapped[str | None] = mapped_column(String, nullable=True)
 
     items: Mapped[list["EnrichmentJobItem"]] = relationship(back_populates="job")
 
@@ -75,3 +80,11 @@ class SchoolContact(Base):
     captured_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     enrichment_job_id: Mapped[int | None] = mapped_column(ForeignKey("enrichment_jobs.id"), nullable=True)
     contact_quality: Mapped[str] = mapped_column(String, nullable=False, default="failed")
+    # Provenance for the LLM-extraction overhaul (see llm_extract.py) --
+    # all three nullable since RSPO-sourced and pre-overhaul contacts have
+    # none of this. confidence/evidence come straight from the model's own
+    # StaffRecord (after grounding validation); extraction_method is one of
+    # "llm_text"|"llm_vision"|"regex"|"rspo".
+    confidence: Mapped[str | None] = mapped_column(String, nullable=True)
+    evidence: Mapped[str | None] = mapped_column(String, nullable=True)
+    extraction_method: Mapped[str | None] = mapped_column(String, nullable=True)

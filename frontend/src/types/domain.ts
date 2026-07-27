@@ -75,6 +75,10 @@ export interface School {
   is_branch: boolean
   has_grades_7_8: boolean | null
   website_url: string | null
+  /** null = straight from RSPO's raw field, never corrected. "manual" =
+   * user-entered override; "enrichment" = auto-discovered via search --
+   * either one survives future RSPO re-imports. */
+  website_url_source: "rspo_structured_field" | "rspo_name_match" | "enrichment" | "manual" | null
   language_orientation: LanguageOrientation | null
   school_profile: string | null
   director_name: string | null

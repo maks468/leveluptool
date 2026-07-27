@@ -89,6 +89,10 @@ export async function getSchoolContacts(id: number): Promise<SchoolContact[]> {
   return api.get<SchoolContact[]>(`/schools/${id}/contacts`)
 }
 
+export async function updateSchoolWebsite(id: number, websiteUrl: string): Promise<School> {
+  return api.patch<School>(`/schools/${id}/website`, { website_url: websiteUrl })
+}
+
 export async function listVoivodeships(scope: FacetScope = "library"): Promise<VoivodeshipFacet[]> {
   return api.get<VoivodeshipFacet[]>(`/schools/facets/voivodeships?scope=${scope}`)
 }

@@ -23,6 +23,12 @@ dependencies = [
     # binary must be fetched once: `python -m playwright install chromium`.
     # Enrichment degrades gracefully (skips the fallback) if it's absent.
     "playwright>=1.48",
+    # Drives the locally-installed, subscription-authenticated Claude Code
+    # CLI for contact extraction -- NEVER the pay-as-you-go Anthropic API
+    # (see llm_extract.py's module docstring for the billing-safety
+    # mechanism). Enrichment falls back to regex extraction if the CLI
+    # isn't installed/logged in on the host.
+    "claude-agent-sdk>=0.2.125",
 ]
 
 [project.optional-dependencies]

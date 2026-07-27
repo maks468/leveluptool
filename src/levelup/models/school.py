@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, Integer, String
+from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -33,6 +33,7 @@ class EvidenceSource(str, enum.Enum):
     RSPO_NAME_MATCH = "rspo_name_match"
     RSPO_STRUCTURED_FIELD = "rspo_structured_field"
     ENRICHMENT = "enrichment"
+    MANUAL = "manual"
 
 
 class School(Base):
@@ -42,6 +43,19 @@ class School(Base):
     never touch pipeline/activity/contact/score tables."""
 
     __tablename__ = "schools"
+    __table_args__ = (
+        # The dashboard's "active schools by level" breakdown filters on
+        # is_active then groups by level -- with only single-column indexes
+        # on each, SQLite can use the is_active index to find matching rows
+        # but then has to fetch EVERY one of them from the main table just
+        # to read `level` for the GROUP BY (confirmed directly: ~4s for
+        # ~25,000 rows on this Windows/Docker bind-mounted setup, where
+        # each such row fetch carries real cross-filesystem overhead, vs.
+        # under 40ms for a plain COUNT the is_active index alone answers).
+        # A composite index lets the GROUP BY resolve straight from the
+        # index, no table lookups at all.
+        Index("ix_schools_is_active_level", "is_active", "level"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     rspo_id: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
@@ -70,6 +84,11 @@ class School(Base):
     has_grades_7_8: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     website_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    # None = came straight from RSPO's raw "Adres www" field, never
+    # corrected. MANUAL/ENRICHMENT both outrank a stale or blank RSPO value
+    # on re-import (see upsert.py) -- a human correction or a discovered URL
+    # must survive the next nationwide re-import, not get silently reset.
+    website_url_source: Mapped[EvidenceSource | None] = mapped_column(Enum(EvidenceSource), nullable=True)
 
     language_orientation: Mapped[LanguageOrientation | None] = mapped_column(
         Enum(LanguageOrientation), nullable=True

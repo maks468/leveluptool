@@ -50,6 +50,7 @@ class SchoolOut(BaseModel):
     is_branch: bool
     has_grades_7_8: bool | None
     website_url: str | None
+    website_url_source: str | None
     language_orientation: str | None
     school_profile: str | None
     director_name: str | None
@@ -67,6 +68,10 @@ class SchoolOut(BaseModel):
     @field_serializer("next_action_date")
     def _ser_next_action_date(self, v: datetime | None) -> str | None:
         return _stamp_utc(v)
+
+
+class WebsiteUrlUpdate(BaseModel):
+    website_url: str
 
 
 class CityFacetOut(BaseModel):

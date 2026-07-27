@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from levelup.models.import_batch import ImportBatch
-from levelup.models.school import School
+from levelup.models.school import EvidenceSource, School
 from levelup.services.import_service.column_mapping import map_row
 from levelup.services.import_service.exclusion_rules import classify
 
@@ -26,7 +26,15 @@ def run_import(session: Session, rows: Iterable[dict], batch: ImportBatch) -> Im
     for school in existing_by_rspo_id.values():
         school.is_active = False
 
-    counts = {"total": 0, "imported": 0, "excluded_other_type": 0, "errors": 0}
+    counts = {
+        "total": 0,
+        "imported": 0,
+        "excluded_other_type": 0,
+        "excluded_adult_education": 0,
+        "excluded_special_needs": 0,
+        "excluded_zero_students": 0,
+        "errors": 0,
+    }
     error_samples: list[str] = []
     now = datetime.now(timezone.utc)
 
@@ -36,6 +44,15 @@ def run_import(session: Session, rows: Iterable[dict], batch: ImportBatch) -> Im
 
         if outcome == "exclude_other_type":
             counts["excluded_other_type"] += 1
+            continue
+        if outcome == "exclude_adult_education":
+            counts["excluded_adult_education"] += 1
+            continue
+        if outcome == "exclude_special_needs":
+            counts["excluded_special_needs"] += 1
+            continue
+        if outcome == "exclude_zero_students":
+            counts["excluded_zero_students"] += 1
             continue
 
         try:
@@ -49,6 +66,11 @@ def run_import(session: Session, rows: Iterable[dict], batch: ImportBatch) -> Im
         rspo_id = kwargs["rspo_id"]
         existing = existing_by_rspo_id.get(rspo_id)
         if existing:
+            # A manually-corrected or enrichment-discovered website must
+            # survive a re-import -- a stale/blank RSPO field is never
+            # allowed to clobber a verified correction.
+            if existing.website_url_source in (EvidenceSource.MANUAL, EvidenceSource.ENRICHMENT):
+                kwargs = {k: v for k, v in kwargs.items() if k not in ("website_url", "website_url_source")}
             for key, value in kwargs.items():
                 setattr(existing, key, value)
             existing.is_active = True
@@ -62,7 +84,9 @@ def run_import(session: Session, rows: Iterable[dict], batch: ImportBatch) -> Im
 
     batch.row_count_total = counts["total"]
     batch.row_count_imported = counts["imported"]
-    batch.row_count_excluded_adult = 0
+    batch.row_count_excluded_adult = counts["excluded_adult_education"]
+    batch.row_count_excluded_special_needs = counts["excluded_special_needs"]
+    batch.row_count_excluded_zero_students = counts["excluded_zero_students"]
     batch.row_count_excluded_other_type = counts["excluded_other_type"]
     batch.row_count_errors = counts["errors"]
     batch.imported_at = now

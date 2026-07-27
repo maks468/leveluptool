@@ -21,6 +21,8 @@ class ImportBatch(Base):
     row_count_imported: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     row_count_excluded_adult: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     row_count_excluded_other_type: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    row_count_excluded_special_needs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    row_count_excluded_zero_students: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     row_count_errors: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")

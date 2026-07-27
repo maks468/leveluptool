@@ -64,10 +64,13 @@ def main(csv_path: Path = DEFAULT_CSV_PATH) -> None:
         session.commit()
 
         typer.echo(f"Import batch #{batch.id} complete:")
-        typer.echo(f"  total rows read:        {batch.row_count_total}")
-        typer.echo(f"  imported (upserted):    {batch.row_count_imported}")
-        typer.echo(f"  excluded (other type):  {batch.row_count_excluded_other_type}")
-        typer.echo(f"  errors:                 {batch.row_count_errors}")
+        typer.echo(f"  total rows read:          {batch.row_count_total}")
+        typer.echo(f"  imported (upserted):      {batch.row_count_imported}")
+        typer.echo(f"  excluded (other type):    {batch.row_count_excluded_other_type}")
+        typer.echo(f"  excluded (adult ed):      {batch.row_count_excluded_adult}")
+        typer.echo(f"  excluded (special needs): {batch.row_count_excluded_special_needs}")
+        typer.echo(f"  excluded (0/blank count): {batch.row_count_excluded_zero_students}")
+        typer.echo(f"  errors:                   {batch.row_count_errors}")
         if error_samples:
             typer.echo("\n  sample errors:")
             for msg in error_samples:

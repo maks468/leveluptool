@@ -18,7 +18,10 @@ this app.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
+import tempfile
 import time
 from urllib.parse import urljoin, urlparse
 
@@ -356,11 +359,33 @@ def _patron_name_tokens(school_name: str) -> set[str]:
     return {w.lower() for w in re.findall(r"[A-Za-zŁŚŻŹĆŃÓĘĄłśżźćńóęą]+", tail) if len(w) > 2}
 
 
+def _declension_stem_match(a: str, b: str) -> bool:
+    """True when two words are the SAME name under different Polish
+    grammatical case -- the school's own "im." clause is always genitive
+    ("im. Jana Kochanowskiego"), while a page's own body text about its
+    patron is routinely nominative ("Jan Kochanowski"). Confirmed directly
+    (caught by this module's own fixture test): a flat exact-match check
+    silently let a school's patron slip through as "staff" whenever the
+    two forms diverged. Polish declension either appends a case ending
+    (Kochanowski -> Kochanowskiego) or swaps a same-length ending (Maria ->
+    Marii, Anna -> Anny) -- comparing everything but the last character of
+    the SHORTER word survives either pattern without needing to enumerate
+    Polish suffix rules."""
+    a, b = a.lower(), b.lower()
+    if a == b:
+        return True
+    n = min(len(a), len(b))
+    if n < 3:
+        return False
+    stem_len = n - 1
+    return a[:stem_len] == b[:stem_len]
+
+
 def _is_patron_name(candidate: str, patron_tokens: set[str]) -> bool:
     if not patron_tokens:
         return False
     words = [w.lower() for w in candidate.split()]
-    return bool(words) and all(w in patron_tokens for w in words)
+    return bool(words) and all(any(_declension_stem_match(w, token) for token in patron_tokens) for w in words)
 
 
 # A school is tagged "Special-needs school" ONLY when its official name
@@ -801,6 +826,57 @@ def fetch_page(url: str) -> str | None:
     return None
 
 
+_VISION_CONTENT_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "application/pdf": ".pdf",
+}
+
+
+def download_for_vision(url: str, *, max_bytes: int = 10 * 1024 * 1024) -> str | None:
+    """Downloads one staff-roster image/PDF to a temp file for the vision
+    path (llm_extract.extract_from_image/_pdf) -- the SDK's Read tool
+    needs a real file path, not bytes in memory. Streamed with an early
+    abort once max_bytes is exceeded (never trusts a possibly-absent/
+    lying Content-Length header alone), and the content-type is checked
+    against what the file actually served, not just the URL's extension.
+    Returns None on any failure -- the caller treats a vision call it
+    can't set up as just another way this school's roster wasn't
+    reachable, never a hard error. The caller owns deleting the file
+    afterward."""
+    try:
+        resp = requests.get(url, timeout=15, headers={"User-Agent": USER_AGENT}, stream=True)
+        resp.raise_for_status()
+    except requests.RequestException:
+        return None
+
+    content_type = resp.headers.get("Content-Type", "").split(";")[0].strip().lower()
+    suffix = _VISION_CONTENT_TYPES.get(content_type)
+    if suffix is None:
+        resp.close()
+        return None
+
+    fd, path = tempfile.mkstemp(suffix=suffix, prefix="levelup_vision_")
+    total = 0
+    try:
+        with os.fdopen(fd, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=65536):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError("exceeded max_bytes")
+                f.write(chunk)
+        return path
+    except Exception:  # noqa: BLE001 -- oversized/interrupted download is a normal, expected outcome here
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return None
+    finally:
+        resp.close()
+
+
 def _find_subpage_links(soup: BeautifulSoup, base_url: str, school_name: str = "") -> list[tuple[int, str]]:
     """Returns (priority_tier, absolute_url) pairs -- lower tier is more
     valuable to visit first. Tiers are compared globally across the whole
@@ -1175,6 +1251,72 @@ def _english_teacher_from_entries(soup: BeautifulSoup, patron_tokens: set[str]) 
     return None
 
 
+# Per-page cap for the LLM-ready text (see _prepare_page_for_llm) -- the
+# overall per-school budget (llm_extract.cap_pages: 8 pages / ~50,000
+# chars) still applies on top of this, but capping each page individually
+# first means one enormous page (a whole BIP archive, say) can't by
+# itself starve every other page out of the school-level budget.
+_MAX_LLM_PAGE_CHARS = 8_000
+
+
+def _prepare_page_for_llm(html: str, url: str) -> str:
+    """Structure-preserving text for the LLM extraction call (see
+    llm_extract.py) -- a plain soup.get_text() (what _extract's regex path
+    uses) flattens a staff TABLE into one run-on string, losing exactly
+    the row structure that ties a name to its own email/subject cell. Same
+    trick as _extract's own <br> handling: mutate the parse tree in place
+    (table rows -> "cell | cell", list items -> "- item") BEFORE flattening,
+    so get_text() can't erase structure it never gets the chance to see."""
+    soup = BeautifulSoup(html, "html.parser")
+
+    for br in soup.find_all("br"):
+        br.replace_with("\n")
+    for row in soup.find_all("tr"):
+        cells = [c.get_text(" ", strip=True) for c in row.find_all(["td", "th"])]
+        row.replace_with("\n" + " | ".join(cells) + "\n")
+    for li in soup.find_all("li"):
+        li.replace_with("\n- " + li.get_text(" ", strip=True) + "\n")
+
+    text = soup.get_text("\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n[ \t]*\n+", "\n", text)
+    text = _decode_at_dot_obfuscation(text).strip()
+
+    # Cloudflare's cipher replaces the real address entirely (plain text
+    # only ever shows a "[email protected]" placeholder) -- decode every
+    # instance from the DOM's data-cfemail attributes and surface them as
+    # a footer so the model can see the real addresses without parsing
+    # HTML itself. A second, separate soup walk (not the mutated one
+    # above) since the <tr>/<li> replacements already collapsed those
+    # elements to plain strings.
+    cf_soup = BeautifulSoup(html, "html.parser")
+    decoded_cf = sorted(
+        {
+            decoded
+            for el in cf_soup.select("[data-cfemail]")
+            if (decoded := _decode_cf_email(el.get("data-cfemail", ""))) and EMAIL_RE.fullmatch(decoded)
+        }
+    )
+    if decoded_cf:
+        text += "\n\nDECODED_OBFUSCATED_EMAILS: " + ", ".join(decoded_cf)
+
+    # Image/PDF/doc links never appear in flattened text at all (they're
+    # hrefs, not visible text) -- listed here with their label so the
+    # vision path (llm_extract.extract_from_image/_pdf) knows what's worth
+    # downloading without a separate crawl pass.
+    media_links = []
+    for a in cf_soup.select("a[href]"):
+        href = a["href"]
+        if href.lower().split("?")[0].endswith(NON_HTML_EXTENSIONS):
+            label = re.sub(r"\s+", " ", a.get_text(" ")).strip()
+            absolute = urljoin(url, href)
+            media_links.append(f"{absolute} ({label})" if label else absolute)
+    if media_links:
+        text += "\n\nIMAGE_OR_PDF_LINKS:\n" + "\n".join(media_links)
+
+    return text[:_MAX_LLM_PAGE_CHARS]
+
+
 def _extract(html: str, url: str, school_name: str = "") -> dict:
     soup = BeautifulSoup(html, "html.parser")
     # A <br> is a line break between staff entries; turn it into a real
@@ -1203,6 +1345,20 @@ def _extract(html: str, url: str, school_name: str = "") -> dict:
     # report *why* nothing was found instead of a silent, misleading blank.
     mount = soup.find(id="root") or soup.find(id="app")
     js_app_shell = bool(mount) and len(re.sub(r"\s+", "", text)) < 250
+
+    # BUG FIX: the mount+near-empty check above only catches a shell with
+    # almost NO content at all -- it misses the far more common real-world
+    # pattern (confirmed directly: zs3wiskitki.pl) of a client-side-routed
+    # site whose server response is IDENTICAL for every path, nav chrome
+    # and all, just substantial enough (tens of KB) to clear the <250-char
+    # bar. That pattern is invisible from a single page's own content; it
+    # only shows up by comparing MULTIPLE pages, which is exactly what
+    # content_fingerprint exists for -- see _merge, the one place that
+    # actually sees more than one page from the same crawl. Hashed on the
+    # UNCAPPED flattened text (not _prepare_page_for_llm's 8000-char-capped
+    # version) so two genuinely different long pages can never collide
+    # just because they share the same nav-heavy prefix.
+    content_fingerprint = hashlib.md5(text.encode("utf-8", errors="ignore")).hexdigest()
 
     phone = None
     match = PHONE_RE.search(text)
@@ -1244,6 +1400,7 @@ def _extract(html: str, url: str, school_name: str = "") -> dict:
         "source_url": url,
         "subpage_links": _find_subpage_links(soup, url, school_name),
         "email_cloak_detected": email_cloak_detected,
+        "content_fingerprint": content_fingerprint,
         # Speciality is derived from the school's official NAME only (seeded
         # in scrape_school_website), never from page body text. Scanning body
         # text produced false positives: every Polish public site carries a
@@ -1253,23 +1410,31 @@ def _extract(html: str, url: str, school_name: str = "") -> dict:
         # integracyjn -- none of which mean the school serves that population.
         "specialties": set(),
         "js_app_shell": js_app_shell,
+        # Structure-preserving text for the LLM extraction call (see
+        # llm_extract.py) -- built from the SAME html this function
+        # already parsed, never a second fetch.
+        "llm_text": _prepare_page_for_llm(html, url),
     }
 
 
 _SEARCH_BLOCK_MARKERS = ("anubis_challenge", "unusual traffic", "recaptcha", "are you a robot")
 
-# Set once, for the lifetime of this process, the first time a search
-# response turns out to be an anti-bot challenge page rather than real
-# results -- confirmed directly: a burst of automated requests during
-# heavy same-day testing got this exact IP served an "Anubis"
-# proof-of-work challenge page by Startpage (no result links, no <title>,
-# the raw HTML containing "anubis_challenge") instead of search results.
-# Once that's happened once, every following query in the SAME run would
-# just hit the same wall -- there is no per-query recovery, and continuing
-# to hammer it only prolongs the block. A restart clears this (a fresh
-# process might get a fresh IP-reputation window, or the block may simply
-# have expired by then).
-_search_blocked = False
+# A cooldown, NOT a permanent kill switch -- confirmed directly: a burst of
+# automated requests during heavy same-day testing got this exact IP served
+# an "Anubis" proof-of-work challenge page by Startpage (no result links, no
+# <title>, the raw HTML containing "anubis_challenge") instead of search
+# results, and every one of a whole 146-school batch's remaining schools
+# then silently got "search_blocked" with no real attempt at all -- the
+# process this app runs as (`--workers 1`, per the Dockerfile) is
+# long-lived, with the auto-enrich background thread running in it
+# continuously, so a PERMANENT-until-restart flag meant one transient block
+# would silently disable search for every future auto-enrich cycle too,
+# forever, until a human happened to notice and manually restart the
+# container. Retrying after a cooldown window instead means the next
+# school enriched after the window passes gets a real attempt again, no
+# restart required.
+_SEARCH_BLOCK_COOLDOWN_SECONDS = 1800
+_search_blocked_until: float = 0.0
 
 
 def _looks_like_search_block(html: str) -> bool:
@@ -1305,8 +1470,8 @@ def _search_web(query: str, max_results: int = MAX_SEARCH_RESULTS_PER_QUERY) -> 
     needed -- but, confirmed directly the same day, sustained automated
     use is enough to get it to challenge-wall this IP the same way
     DuckDuckGo already does, just at a higher request-volume threshold."""
-    global _search_blocked
-    if _search_blocked:
+    global _search_blocked_until
+    if time.time() < _search_blocked_until:
         return None
     try:
         resp = requests.get(
@@ -1321,7 +1486,7 @@ def _search_web(query: str, max_results: int = MAX_SEARCH_RESULTS_PER_QUERY) -> 
 
     search_text = _decoded_text(resp)
     if _looks_like_search_block(search_text):
-        _search_blocked = True
+        _search_blocked_until = time.time() + _SEARCH_BLOCK_COOLDOWN_SECONDS
         return None
 
     soup = BeautifulSoup(search_text, "html.parser")
@@ -1337,12 +1502,47 @@ def _search_web(query: str, max_results: int = MAX_SEARCH_RESULTS_PER_QUERY) -> 
     return links
 
 
-def _merge(result: dict, found: dict) -> None:
+def _merge(result: dict, found: dict, *, tier: int = 0, third_party: bool = False) -> None:
     """In-place: fills whichever of director/teacher/phone is still
     missing (first real find wins), and records the first source that
     contributed a find. Every email candidate from every page is kept
     (union, never "first/best wins") -- which one belongs to which
-    person can only be judged later, once both names are known."""
+    person can only be judged later, once both names are known.
+
+    Also the single choke point that collects each page's LLM-ready text
+    (see _prepare_page_for_llm) into result["llm_pages"] -- every _merge
+    call site in the crawl represents a page whose content is actually
+    being kept/used, so hooking in here (rather than at each individual
+    _extract call) naturally excludes a rejected hub page's content
+    without needing a separate "should this count" check.
+
+    Also where cross-page identical-content detection lives (see
+    content_fingerprint in _extract) -- a client-side-routed SPA serving
+    the exact same response for every URL is invisible from any ONE
+    page's own content, so it can only be caught here, where more than
+    one page's fingerprint is actually visible at once."""
+    url = found.get("source_url")
+    if url:
+        seen_fingerprints: dict[str, str] = result.setdefault("_seen_fingerprints", {})
+        fingerprint = found.get("content_fingerprint")
+        if fingerprint:
+            first_seen_url = seen_fingerprints.get(fingerprint)
+            if first_seen_url and first_seen_url != url:
+                result["js_app_shell"] = True
+            else:
+                seen_fingerprints.setdefault(fingerprint, url)
+
+    if found.get("llm_text"):
+        # Replace, don't duplicate -- a URL re-merged after the js_app_shell
+        # fallback below re-fetches it via a real browser is the SAME page
+        # appearing a second time, now with its REAL post-JS content. The
+        # stale plain-fetch version (by definition uninformative, or this
+        # fallback wouldn't have triggered) must not also survive into the
+        # LLM prompt alongside it.
+        result["llm_pages"] = [p for p in result["llm_pages"] if p["url"] != url] + [
+            {"url": url, "text": found["llm_text"], "tier": tier, "third_party": third_party}
+        ]
+
     contributed = False
     for field in ("director_name", "english_teacher_name", "phone"):
         if not result.get(field) and found.get(field):
@@ -1441,7 +1641,7 @@ def _scrape_with_browser(homepage: str, school_name: str, result: dict, sources_
 
                 while frontier and pages_rendered < MAX_RENDERED_PAGES and not _is_complete(result):
                     frontier.sort(key=lambda pair: pair[0])
-                    _tier, link = frontier.pop(0)
+                    tier, link = frontier.pop(0)
                     if _dedup_key(link) in visited:
                         continue
                     visited.add(_dedup_key(link))
@@ -1449,7 +1649,7 @@ def _scrape_with_browser(homepage: str, school_name: str, result: dict, sources_
                     pages_rendered += 1
                     if sub_html:
                         sub_found = _extract(sub_html, link, school_name)
-                        _merge(result, sub_found)
+                        _merge(result, sub_found, tier=tier)
                         frontier.extend(
                             pair for pair in sub_found["subpage_links"] if _dedup_key(pair[1]) not in visited
                         )
@@ -1577,6 +1777,18 @@ def scrape_school_website(
         # True when the headless-browser fallback actually rendered such a
         # site, i.e. the details below were read from the real post-JS DOM.
         "js_render_used": False,
+        # Structure-preserving text of every page actually kept/used during
+        # the crawl (see _merge), for the single post-crawl LLM extraction
+        # call in jobs.py -- never re-fetched, built from the same HTML the
+        # regex path already parsed. augment_with_web_search (called
+        # separately, after this function returns) appends its own pages
+        # here too, tagged third_party=True.
+        "llm_pages": [],
+        # Internal only (leading underscore, never read by callers outside
+        # _merge): content_fingerprint -> first URL that produced it, used
+        # to detect a client-side-routed SPA serving identical content for
+        # every path (see _merge).
+        "_seen_fingerprints": {},
     }
     sources_checked: list[dict] = []
 
@@ -1820,7 +2032,7 @@ def scrape_school_website(
             if sub_html:
                 sources_checked.append({"url": link, "status": "ok"})
                 found = _extract(sub_html, link, school_name)
-                _merge(result, found)
+                _merge(result, found, tier=tier)
                 _note_cloak(found)
                 if (
                     tier == -1
@@ -1866,6 +2078,27 @@ def scrape_school_website(
         if (result["js_app_shell"] or homepage_unreachable) and not _is_complete(result):
             if _scrape_with_browser(effective_homepage, school_name, result, sources_checked):
                 result["js_render_used"] = True
+
+    # A confirmed identical-content SPA (js_app_shell via the cross-page
+    # fingerprint check in _merge) can still end up with several llm_pages
+    # entries carrying the SAME text under different URLs even after the
+    # browser fallback -- some client-side routers only react to an
+    # in-app link click, never to a direct page load of the target URL,
+    # so re-rendering each URL independently just reproduces the same
+    # shell every time. Collapsing to one representative page here costs
+    # nothing (the content is provably identical) and frees up the
+    # school-level page/char budget (llm_extract.cap_pages) for whatever
+    # distinct content, if any, was also found.
+    if result["llm_pages"]:
+        deduped_pages = []
+        seen_text_hashes: set[str] = set()
+        for page in result["llm_pages"]:
+            text_hash = hashlib.md5(page["text"].encode("utf-8", errors="ignore")).hexdigest()
+            if text_hash in seen_text_hashes:
+                continue
+            seen_text_hashes.add(text_hash)
+            deduped_pages.append(page)
+        result["llm_pages"] = deduped_pages
 
     result["sources_checked"] = sources_checked
     return result
@@ -1949,7 +2182,7 @@ def augment_with_web_search(school_name: str, city: str | None, result: dict, rs
             html = fetch_page(link)
             if html:
                 sources_checked.append({"url": link, "status": "ok", "found_via_search": query})
-                _merge(result, _extract(html, link))
+                _merge(result, _extract(html, link), third_party=True)
             else:
                 sources_checked.append({"url": link, "status": "unreachable", "found_via_search": query})
 

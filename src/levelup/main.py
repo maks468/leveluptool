@@ -6,8 +6,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from sqlalchemy import text
+
 from levelup.api.v1.router import router as api_v1_router
-from levelup.core.db import SessionLocal
+from levelup.core.db import SessionLocal, engine
+from levelup.services.enrichment import llm_extract
 from levelup.services.enrichment.auto_enrich import start_auto_enrich_thread, stop_auto_enrich_thread
 from levelup.services.enrichment.jobs import reap_orphaned_jobs
 
@@ -23,11 +26,28 @@ FRONTEND_DIST = Path(os.environ.get("LEVELUP_FRONTEND_DIST", _DEFAULT_DIST))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # SQLite's query planner has no idea which tables are small (e.g.
+    # pipeline_state, ~1k rows) vs. large (schools, ~25k) until ANALYZE has
+    # populated sqlite_stat1 -- without it, a join across a small and a
+    # large table can pick a backwards plan (scan the LARGE table, probe
+    # the small one per row) instead of the obviously cheaper reverse.
+    # Confirmed directly: the Pipeline listing was taking ~4.3s per page
+    # for exactly this reason on a database that had never been analyzed.
+    # Cheap (a quarter-second on this ~25k-school database) and safe to
+    # run on every startup -- stats drift as data changes (imports,
+    # enrichment runs, pipeline pulls), so refreshing on each deploy/
+    # restart keeps the planner from silently regressing back to a bad
+    # plan over time.
+    with engine.connect() as conn:
+        conn.execute(text("ANALYZE"))
+        conn.commit()
+
     session = SessionLocal()
     try:
         reap_orphaned_jobs(session)
     finally:
         session.close()
+    llm_extract.check_cli_available()
     start_auto_enrich_thread()
     yield
     stop_auto_enrich_thread()

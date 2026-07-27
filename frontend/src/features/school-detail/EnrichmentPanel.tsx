@@ -10,6 +10,7 @@ import type { ContactQuality, School } from "@/types/domain"
 import { DataValueCell } from "@/components/shared/DataValueCell"
 import { EnrichmentLevelBadge } from "@/components/shared/EnrichmentLevelBadge"
 import { EnrichmentSourcesDisclosure } from "./EnrichmentSourcesDisclosure"
+import { WebsiteField } from "./WebsiteField"
 
 const CONTACT_TYPE_LABEL: Record<string, string> = {
   director: "Director",
@@ -74,7 +75,7 @@ export function EnrichmentPanel({ school }: { school: School }) {
         </dd>
         <dt className="text-[var(--color-text-muted)]">Website</dt>
         <dd>
-          <DataValueCell value={school.website_url} />
+          <WebsiteField school={school} />
         </dd>
         <dt className="text-[var(--color-text-muted)]">Speciality</dt>
         <dd>

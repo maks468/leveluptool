@@ -25,6 +25,7 @@ class ActivityType(str, enum.Enum):
     ENRICHMENT_COMPLETED = "enrichment_completed"
     OWNERSHIP_SUBTYPE_CONFIRMED = "ownership_subtype_confirmed"
     PULLED_INTO_PIPELINE = "pulled_into_pipeline"
+    WEBSITE_URL_CORRECTED = "website_url_corrected"
     # Reserved, unused until automation ships — added now so the enum grows
     # additively later instead of breaking existing consumers.
     EMAIL_SENT = "email_sent"
