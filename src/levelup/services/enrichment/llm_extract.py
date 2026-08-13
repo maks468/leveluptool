@@ -83,8 +83,13 @@ _ISOLATED_CWD = str(_ISOLATED_CWD_PATH)
 # cross-call state to enforce it itself.
 MAX_VISION_CALLS_PER_SCHOOL = 3
 
-MAX_PAGES_PER_SCHOOL = 8
-MAX_CHARS_PER_SCHOOL = 50_000
+# Backstops, not the primary limiter: pages_that_could_prove() below
+# removes pages that provably cannot yield a writeable record, which is
+# what actually keeps the bundle small. These stay as a ceiling and are
+# env-tunable so the budget can be adjusted without a code change (and so
+# a future config UI has somewhere to write).
+MAX_PAGES_PER_SCHOOL = int(os.getenv("LEVELUP_LLM_MAX_PAGES", "8"))
+MAX_CHARS_PER_SCHOOL = int(os.getenv("LEVELUP_LLM_MAX_CHARS", "50000"))
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_PDF_BYTES = 10 * 1024 * 1024
 MAX_PDF_PAGES = 10
@@ -110,6 +115,16 @@ class CliUnavailableError(Exception):
     not logged in, bundled-CLI discovery failed) -- distinct from
     UsageLimitError so callers fall back to regex extraction for this
     school instead of stalling the whole batch."""
+
+
+# The only roles anything downstream can write (jobs.py writes "director"
+# and "english_teacher" slots; deputy is kept so a deputy is recognizable
+# as NOT the director rather than being silently re-roled). The Literal
+# below deliberately still ACCEPTS the two legacy values: a model that
+# ignores the prompt and emits one stray "other_teacher" must not fail
+# schema validation and void the whole extraction -- such records are
+# dropped in ground_extraction instead.
+TARGET_ROLES = frozenset({"director", "deputy_director", "english_teacher"})
 
 
 class StaffRecord(BaseModel):
@@ -168,6 +183,28 @@ def cap_pages(
     return kept
 
 
+def pages_that_could_prove(pages: list[PreparedPage], roles) -> list[PreparedPage]:
+    """Drops pages that CANNOT possibly yield a writeable record, so they
+    are never paid for. This is a pure cost filter with provably zero
+    effect on what gets written, because it is derived from the grounding
+    gate itself: ground_extraction only keeps a record whose evidence span
+    -- a verbatim quote from THAT page -- contains the role's own
+    vocabulary (_ROLE_EVIDENCE_KEYWORDS). A page whose text contains none
+    of that vocabulary therefore cannot produce a single surviving record
+    for any of `roles`, no matter what the model says about it.
+
+    Cross-page pairing can't be lost either: a record's name, role quote
+    and email_evidence must all ground against the ONE page it cites, so
+    a page contributing only an address was already unusable on its own.
+
+    Roles with no vocabulary entry (the legacy other_* values) are ignored
+    here -- they are dropped by ground_extraction anyway."""
+    vocabulary = tuple(kw for role in roles for kw in _ROLE_EVIDENCE_KEYWORDS.get(role, ()))
+    if not vocabulary:
+        return pages
+    return [page for page in pages if any(kw in page.text.lower() for kw in vocabulary)]
+
+
 def _child_env() -> dict[str, str]:
     """The SDK merges options.env ON TOP of the fully-inherited parent
     env (see claude_agent_sdk's subprocess transport: `{**inherited_env,
@@ -186,6 +223,16 @@ def _extract_text(msg: AssistantMessage) -> str:
     return "".join(block.text for block in msg.content if isinstance(block, TextBlock))
 
 
+# Hard wall-clock ceiling per LLM call. Without one, a wedged CLI
+# subprocess stalls its school FOREVER: the batch item stays "running", the
+# Stop button's cooperative cancel never gets a chance to fire (it is only
+# checked between schools), and the job tray shows an eternal spinner --
+# the residual form of the "job hung 3+ hours" incident. 5 minutes is far
+# above any legitimate single-call latency observed (even Opus over a full
+# 50k-char page bundle), so a trip means "stuck", not "slow".
+CALL_TIMEOUT_SECONDS = 300
+
+
 async def _run_query(
     prompt: str, *, system_prompt: str, model: str, allowed_tools: list[str]
 ) -> tuple[str | None, dict]:
@@ -202,37 +249,54 @@ async def _run_query(
     usage = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
 
     try:
-        async for msg in query(prompt=prompt, options=options):
-            if isinstance(msg, RateLimitEvent):
-                info = msg.rate_limit_info
-                if info.status == "rejected":
-                    raise UsageLimitError(
-                        f"Claude usage window exhausted ({info.rate_limit_type})",
-                        resets_at=info.resets_at,
-                        rate_limit_type=info.rate_limit_type,
-                    )
-            elif isinstance(msg, AssistantMessage):
-                if msg.error == "rate_limit":
-                    raise UsageLimitError("Claude usage window exhausted (assistant error)")
-                if msg.error is not None:
-                    logger.warning("llm_extract: assistant error %r for model %s", msg.error, model)
-                    return None, usage
-                text = _extract_text(msg)
-                if text:
-                    final_text = (final_text or "") + text
-            elif isinstance(msg, ResultMessage):
-                if msg.usage:
-                    usage["input_tokens"] = msg.usage.get("input_tokens", 0)
-                    usage["output_tokens"] = msg.usage.get("output_tokens", 0)
-                usage["cost_usd"] = msg.total_cost_usd or 0.0
-                if msg.is_error:
-                    errors_text = " ".join(msg.errors or [])
-                    if msg.api_error_status == 429 or "rate" in errors_text.lower() or "usage" in errors_text.lower():
-                        raise UsageLimitError(f"Claude call failed as a usage/rate limit: {errors_text}")
-                    logger.warning("llm_extract: result error for model %s: %s", model, errors_text)
-                    return None, usage
+        # The deadline wraps the whole stream in place rather than via a
+        # second wrapper generator: wrapping produced "aclose(): asynchronous
+        # generator is already running" whenever the SDK errored mid-stream,
+        # because the outer generator was closed while the inner one was
+        # still executing.
+        async with asyncio.timeout(CALL_TIMEOUT_SECONDS):
+            async for msg in query(prompt=prompt, options=options):
+                if isinstance(msg, RateLimitEvent):
+                    info = msg.rate_limit_info
+                    if info.status == "rejected":
+                        raise UsageLimitError(
+                            f"Claude usage window exhausted ({info.rate_limit_type})",
+                            resets_at=info.resets_at,
+                            rate_limit_type=info.rate_limit_type,
+                        )
+                elif isinstance(msg, AssistantMessage):
+                    if msg.error == "rate_limit":
+                        raise UsageLimitError("Claude usage window exhausted (assistant error)")
+                    if msg.error is not None:
+                        logger.warning("llm_extract: assistant error %r for model %s", msg.error, model)
+                        return None, usage
+                    text = _extract_text(msg)
+                    if text:
+                        final_text = (final_text or "") + text
+                elif isinstance(msg, ResultMessage):
+                    if msg.usage:
+                        usage["input_tokens"] = msg.usage.get("input_tokens", 0)
+                        usage["output_tokens"] = msg.usage.get("output_tokens", 0)
+                    usage["cost_usd"] = msg.total_cost_usd or 0.0
+                    if msg.is_error:
+                        errors_text = " ".join(msg.errors or [])
+                        if (
+                            msg.api_error_status == 429
+                            or "rate" in errors_text.lower()
+                            or "usage" in errors_text.lower()
+                        ):
+                            raise UsageLimitError(f"Claude call failed as a usage/rate limit: {errors_text}")
+                        logger.warning("llm_extract: result error for model %s: %s", model, errors_text)
+                        return None, usage
     except UsageLimitError:
         raise
+    except TimeoutError as exc:
+        # A wedged CLI subprocess, not a slow model -- see CALL_TIMEOUT_SECONDS.
+        # Treated exactly like an unreachable CLI: this school falls back
+        # gracefully instead of hanging the whole batch.
+        raise CliUnavailableError(
+            f"Claude call exceeded {CALL_TIMEOUT_SECONDS}s -- treating the CLI as wedged"
+        ) from exc
     except ClaudeSDKError as exc:
         # The CLI itself couldn't be reached at all (not installed, not
         # logged in, bundled-CLI discovery failed, the process crashed) --
@@ -275,31 +339,32 @@ Return ONLY a single JSON object (no markdown fences, no commentary) matching ex
   "staff": [
     {
       "name": "First Last",
-      "role": "director" | "deputy_director" | "english_teacher" | "other_teacher" | "other_staff",
-      "subjects": ["..."],
+      "role": "director" | "deputy_director" | "english_teacher",
       "email": "..." or null,
       "email_evidence": "verbatim quote containing both the surname and the email" or null,
       "evidence": "verbatim quote from the page proving this person and this role",
       "source_url": "the exact PAGE url this record came from",
       "confidence": "high" | "medium" | "low"
     }
-  ],
-  "unattributed_emails": ["email addresses seen on the pages that are not clearly tied to one named person"],
-  "phone": "..." or null,
-  "staff_roster_image_or_pdf_urls": ["any image/PDF URLs listed at the end of a page block that look like they might show a staff roster"],
-  "notes": "..." or null
+  ]
 }
+
+SCOPE -- read this first, it controls the size of your answer:
+- Return ONLY people holding one of these three roles: director, deputy_director, english_teacher.
+- Do NOT return any other teacher or staff member. Other subjects' teachers, secretaries, librarians, counsellors and so on are discarded unread, so listing them only wastes the response. A staff page naming 40 teachers should normally yield 1-4 records here.
+- Return every English teacher you find (a school can have several), but no other subject's teacher.
+- Emit no fields other than those shown above.
 
 Non-negotiable rules:
 - Only extract a person whose name is LITERALLY written on one of the given pages. Never infer, guess, or complete a name. The only normalization allowed is reversing a "Surname Firstname" listing to "Firstname Surname".
 - Every staff record MUST have a verbatim `evidence` quote (copied text, not paraphrased) and the exact `source_url` of the page it came from.
-- Only set `email` on a person when the page ITSELF associates that email with that specific person (adjacent in a table row, in a "Name - email" pattern, etc). If an email exists on the page but isn't clearly tied to one person, put it in `unattributed_emails` instead -- never guess which person it belongs to.
-- `email_evidence` must be a verbatim quote containing BOTH the person's surname and the email address together; if you can't quote both together, leave `email` and `email_evidence` null and put the address in `unattributed_emails`.
+- The `evidence` quote must be ONE contiguous passage that contains BOTH the person's name AND the words stating their role (e.g. "Dyrektor szkoły: mgr Jan Nowak", "Anna Kowalska - nauczyciel języka angielskiego"). If no single passage on the page ties the name to the role, DO NOT output that record at all -- a record whose quote shows only the name, or only the role, will be discarded.
+- "Wicedyrektor" / "zastępca dyrektora" is deputy_director, NEVER director. If the only leadership named is a deputy, do not output any director record.
+- Only set `email` on a person when the page ITSELF associates that email with that specific person (adjacent in a table row, in a "Name - email" pattern, etc). If an email exists on the page but isn't clearly tied to one person, leave `email` null -- never guess which person an address belongs to. Unpaired addresses are collected separately by other code, so you do not need to report them.
+- `email_evidence` must be a verbatim quote containing BOTH the person's surname and the email address together; if you can't quote both together, leave `email` and `email_evidence` null.
 - The school's patron/namesake (the person in "im. ..." / "imienia ...") is NEVER staff, even if their name appears prominently.
-- Recognize Polish role vocabulary: "dyrektor" = director, "wicedyrektor"/"zastępca dyrektora" = deputy_director, "nauczyciel języka angielskiego"/"nauczyciel j. angielskiego"/"anglista" (a teacher whose only or primary subject is English) = english_teacher, any other named teacher = other_teacher. Some bilingual schools label roles in English directly ("English teacher", "Principal") -- recognize those the same way.
-- Return ALL English teachers you find, not just one -- a school can have several.
-- If a page is clearly a different organization (a third party, e.g. a search result about the school rather than the school's own site), still extract from it but set confidence no higher than "medium".
-- An empty "staff" list is a completely valid, honest answer when the given pages genuinely name no staff -- never fabricate a record to avoid returning empty.
+- Recognize Polish role vocabulary: "dyrektor" = director, "wicedyrektor"/"zastępca dyrektora" = deputy_director, "nauczyciel języka angielskiego"/"nauczyciel j. angielskiego"/"anglista" (a teacher whose only or primary subject is English) = english_teacher. Some bilingual schools label roles in English directly ("English teacher", "Principal") -- recognize those the same way.
+- An empty "staff" list is a completely valid, honest answer when the given pages genuinely name none of these three roles -- never fabricate a record to avoid returning empty.
 """
 
 _VISION_SYSTEM_PROMPT = """You read an image or a scanned/exported PDF page from a Polish school's staff roster and extract staff contact information.
@@ -374,25 +439,66 @@ def _surname(name: str) -> str:
 
 
 def _normalize_ws(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
+    # \xa0 (nbsp) appears throughout Polish CMS output and must compare
+    # equal to a plain space, or verbatim-quote checks fail on real quotes.
+    return re.sub(r"\s+", " ", text.replace("\xa0", " ")).strip()
 
 
-def ground_extraction(extraction: SchoolExtraction, pages_by_url: dict[str, str], school_name: str = "") -> SchoolExtraction:
+# The evidence span must itself name the role -- these are the vocabularies
+# a span must contain for its claimed role to count as PROVEN by that span.
+# Director evidence is additionally rejected when the span carries a deputy
+# marker: "Wicedyrektor: X" / "zastępca dyrektora - X" contains "dyrektor"
+# but proves the OPPOSITE of role="director". Precision-first: a span
+# mentioning both the director and a deputy is ambiguous, so it proves
+# neither and the record is dropped.
+_ROLE_EVIDENCE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "director": ("dyrektor", "principal", "headmaster", "headmistress"),
+    "deputy_director": ("wicedyrektor", "zastępca", "z-ca", "vice-principal", "deputy"),
+    "english_teacher": ("angielsk", "anglist", "english"),
+}
+_DEPUTY_MARKERS = ("wicedyrektor", "zastępc", "z-ca", "p.o.", "wice-", "vice", "deputy")
+
+
+def _evidence_proves_role(evidence_lower: str, role: str) -> bool:
+    keywords = _ROLE_EVIDENCE_KEYWORDS.get(role)
+    if keywords is None:
+        # other_teacher / other_staff carry no role claim worth verifying --
+        # they are never written to a named contact slot anyway.
+        return True
+    if not any(k in evidence_lower for k in keywords):
+        return False
+    if role == "director" and any(m in evidence_lower for m in _DEPUTY_MARKERS):
+        return False
+    return True
+
+
+def ground_extraction(
+    extraction: SchoolExtraction,
+    pages_by_url: dict[str, str],
+    school_name: str = "",
+    third_party_urls: set[str] | frozenset[str] = frozenset(),
+) -> SchoolExtraction:
     """The anti-hallucination gate -- enforced in CODE, not left to the
-    system prompt's instructions alone. Per the task's grounding rules:
-      - name must appear verbatim (or its Last-First reversal) on the page
-        named by source_url, else the whole record is dropped;
+    system prompt's instructions alone. Policy: a contact may only be
+    written when the cited page LITERALLY proves it, so every check here
+    binds the claim to one contiguous quote rather than to the page as a
+    whole (name-somewhere + quote-somewhere allowed any name on a staff
+    page to be paired with any role):
       - source_url must be one of the pages actually given to the model,
-        else dropped (a model can't invent evidence for a page it never
-        saw);
+        and NOT a third-party page (search results/directories may lead us
+        to a school's site but never originate a person/role claim);
+      - the evidence quote must appear verbatim on that page;
+      - the person's name (or its Last-First reversal) must appear INSIDE
+        the evidence quote -- the quote is about this person;
+      - the evidence quote must contain the claimed role's own vocabulary
+        (and, for director, no deputy marker) -- the quote proves this role;
+      - the name must also appear verbatim on the page (cheap re-check);
       - the patron/namesake is rejected as staff even if the model missed it;
-      - email must appear verbatim on that same page, else stripped (person
-        kept, only the email removed);
-      - email_evidence must contain both the surname and the email
-        together, else the email is demoted to unattributed_emails instead
-        of trusted -- catches an email that's merely PRESENT on the page
-        near, but not stated as belonging to, this specific person;
-      - email must also match EMAIL_RE as a final, cheap sanity check.
+      - email is kept only when it appears verbatim on the page, parses as
+        an email, AND email_evidence is itself a verbatim page quote
+        containing both the surname and the address -- otherwise the email
+        is demoted to unattributed_emails (the person survives, the
+        unproven pairing does not).
     Never raises -- a record that fails any check is dropped/demoted, not
     an error, since "found nothing usable" is what every other layer of
     this app treats a missing field as."""
@@ -401,20 +507,37 @@ def ground_extraction(extraction: SchoolExtraction, pages_by_url: dict[str, str]
     newly_unattributed: list[str] = []
 
     for record in extraction.staff:
+        if record.role not in TARGET_ROLES:
+            continue  # a stray other_teacher/other_staff -- nothing downstream can write it
         page_text = pages_by_url.get(record.source_url)
         if page_text is None:
             continue  # source_url wasn't one of the pages given -- can't be grounded, drop
-        if not any(variant in page_text for variant in _name_variants(record.name)):
-            continue  # name (or its reversal) doesn't literally appear on its own cited page
-        if _normalize_ws(record.evidence) not in _normalize_ws(page_text):
+        if record.source_url in third_party_urls:
+            continue  # third-party pages never originate a person/role claim
+        page_norm = _normalize_ws(page_text)
+        evidence_norm = _normalize_ws(record.evidence)
+        if not evidence_norm or evidence_norm not in page_norm:
             continue  # "evidence" must be an actual quote from the page, not a plausible-sounding paraphrase
+        name_variants = {_normalize_ws(v) for v in _name_variants(record.name)}
+        if not any(variant in evidence_norm for variant in name_variants):
+            continue  # the quote must be ABOUT this person, not merely coexist with them on the page
+        if not _evidence_proves_role(evidence_norm.lower(), record.role):
+            continue  # the quote must state the claimed role itself
+        if not any(variant in page_norm for variant in name_variants):
+            continue  # name (or its reversal) doesn't literally appear on its own cited page
         if _is_patron_name(record.name, patron_tokens):
             continue  # the school's own namesake, never staff
 
         email = record.email
         if email:
             surname = _surname(record.name)
-            evidence_ok = bool(record.email_evidence) and surname in record.email_evidence and email in record.email_evidence
+            email_evidence_norm = _normalize_ws(record.email_evidence or "")
+            evidence_ok = (
+                bool(email_evidence_norm)
+                and email_evidence_norm in page_norm  # the pairing quote must itself be real page text
+                and surname in email_evidence_norm
+                and email in email_evidence_norm
+            )
             if email not in page_text or not EMAIL_RE.fullmatch(email) or not evidence_ok:
                 newly_unattributed.append(email)
                 email = None
@@ -433,7 +556,7 @@ def ground_vision_extraction(extraction: SchoolExtraction, *, school_website_dom
     and cap confidence at "medium" unless the email's own domain matches
     the school's real website -- a same-domain email is reasonably strong
     independent evidence the image really is this school's own roster."""
-    domain = (school_website_domain or "").lower().lstrip("www.")
+    domain = (school_website_domain or "").lower().removeprefix("www.")
     grounded_staff: list[StaffRecord] = []
     for record in extraction.staff:
         if not record.evidence.strip():
@@ -442,7 +565,7 @@ def ground_vision_extraction(extraction: SchoolExtraction, *, school_website_dom
         if email and not EMAIL_RE.fullmatch(email):
             email = None
         confidence = record.confidence
-        email_domain_matches = bool(email) and domain and email.lower().split("@")[-1].lstrip("www.") == domain
+        email_domain_matches = bool(email) and domain and email.lower().split("@")[-1].removeprefix("www.") == domain
         if confidence == "high" and not email_domain_matches:
             confidence = "medium"
         grounded_staff.append(record.model_copy(update={"email": email, "confidence": confidence}))
@@ -451,29 +574,43 @@ def ground_vision_extraction(extraction: SchoolExtraction, *, school_website_dom
 
 
 def needs_escalation(extraction: SchoolExtraction | None, pages: list[PreparedPage], still_needed_roles: set[str]) -> bool:
-    """At most ONE escalation call (Opus) per school, triggered only when
-    routine (Haiku) extraction looks genuinely insufficient:
-      - the model returned nothing at all (None -- SDK/parse failure), and
-        this is the FIRST such failure for this school (the caller is
-        responsible for not calling this a second time after a retry --
-        see the "unparseable output twice" rule in the task spec);
-      - a bundle that included a staff-listing page still came back with
-        zero staff at all;
-      - a bundle that included a staff-listing page still came back with
-        NO record at all for a role this school still genuinely lacks
-        (per still_needed_roles, e.g. RSPO/regex found no director yet) --
-        Haiku had a real shot at finding it and came up empty;
-      - such a role DID get a record, but only at "low" confidence, i.e.
-        the model itself wasn't sure.
+    """At most ONE escalation call (Opus) per school. Opus costs roughly an
+    order of magnitude more per token than the routine tier and re-sends the
+    entire page bundle, so it must only run where it can actually change the
+    outcome. Measured on a real 47-school batch, the previous rules fired for
+    43% of schools and 13 of those 20 escalations produced nothing at all --
+    that waste is what the two gates below remove.
+
+    Escalation now requires ALL of:
+      - a role is still genuinely missing (still_needed_roles -- the caller
+        recomputes this from what the routine call actually GROUNDED, not
+        from the pre-LLM state), and
+      - the bundle contains that role's own vocabulary
+        (pages_that_could_prove) -- if the word "dyrektor"/"angielsk" never
+        appears in the text we sent, no model can ground a record for it and
+        a second opinion is provably pointless, and
+      - the bundle contains a real staff-bearing page (bip/staff-listing/
+        kontakt tiers). The homepage now carries its own HOMEPAGE_TIER so it
+        no longer satisfies this test by accident -- previously every school
+        passed it, since the homepage was merged at the default tier 0.
+
+    A None extraction (SDK/parse failure) still escalates unconditionally:
+    nothing was learned, so the bundle's contents are still unexamined.
     """
     if extraction is None:
         return True
-    has_staff_tier_page = any(p.tier <= 2 for p in pages)
-    if not has_staff_tier_page:
+    if not still_needed_roles:
+        return False
+    provable_roles = {
+        role for role in still_needed_roles if pages_that_could_prove(pages, {role})
+    }
+    if not provable_roles:
+        return False  # the evidence to prove these roles simply isn't in the bundle
+    if not any(p.tier <= 2 for p in pages):
         return False
     if not extraction.staff:
         return True
-    for role in still_needed_roles:
+    for role in provable_roles:
         role_records = [r for r in extraction.staff if r.role == role]
         if not role_records or all(r.confidence == "low" for r in role_records):
             return True

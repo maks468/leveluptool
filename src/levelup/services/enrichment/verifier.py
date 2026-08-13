@@ -47,16 +47,23 @@ def is_personal_email_for(email: str | None, person_name: str | None) -> bool:
 
 
 def classify_contact_quality(person_name: str | None, email: str | None) -> str:
-    """Three-tier outcome for a single contact-finding attempt. `email`
-    here must already be personal-verified (via is_personal_email_for) by
-    the caller -- a generic/office email is never passed in, so this
-    doesn't need to re-check that itself:
+    """Three-tier outcome for a single contact-finding attempt:
     - "failed": no named person found -- an unnamed office mailbox isn't
       a contact, even if an email address was captured elsewhere
-    - "partial": a named person was found, but no personal email for them
-    - "verified": a named person AND their own (personal) email, both found
-    """
-    if person_name and email:
+    - "partial": a named person was found, but no email STRUCTURALLY
+      PROVEN to be their own
+    - "verified": a named person AND an email whose shape matches that
+      exact person (is_personal_email_for)
+
+    "verified" re-checks the pairing itself instead of trusting the
+    caller: the old trust-the-caller contract was violated in production
+    (TEB Rzeszów -- one person's name written with another person's email,
+    stamped "verified"). A label users read as "this was checked" must be
+    backed by a check HERE. An LLM-paired email that is real but not
+    name-shaped (e.g. dyrektor@szkola.pl proven by a page quote) therefore
+    caps at "partial" -- acceptable: "verified" is reserved for the
+    strongest, independently re-checkable proof."""
+    if person_name and email and is_personal_email_for(email, person_name):
         return "verified"
     if person_name:
         return "partial"

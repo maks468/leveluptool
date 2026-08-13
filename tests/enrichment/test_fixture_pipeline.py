@@ -67,6 +67,8 @@ def test_full_pipeline_grounds_a_correct_extraction_against_the_fixture():
                 source_url=PAGE_URL,
                 confidence="high",
             ),
+            # A non-writeable role: accepted by the schema, dropped by
+            # grounding (nothing downstream can write it).
             StaffRecord(
                 name="Tomasz Wiśniewski",
                 role="other_teacher",
@@ -80,33 +82,28 @@ def test_full_pipeline_grounds_a_correct_extraction_against_the_fixture():
 
     result = ground_extraction(extraction, pages_by_url, school_name="Szkoła Podstawowa im. Jana Kochanowskiego w Testowie")
     names = {r.name for r in result.staff}
-    assert names == {"Piotr Nowak", "Anna Kowalska", "Tomasz Wiśniewski"}
+    assert names == {"Piotr Nowak", "Anna Kowalska"}
     kowalska = next(r for r in result.staff if r.name == "Anna Kowalska")
     assert kowalska.email == "anna.kowalska@sptestowo.pl"
 
 
-def test_full_pipeline_rejects_the_patron_and_a_hallucinated_email_evidence_mismatch():
-    """A model that (wrongly) tags the school's patron as staff, and one
-    that pairs a real email to the wrong person (evidence doesn't tie
-    them together), against the SAME real fixture text."""
+def test_full_pipeline_strips_a_wrongly_paired_email_but_keeps_the_person():
+    """A model that pairs a real email to the wrong person (the pairing
+    quote doesn't tie them together) against the SAME real fixture text:
+    the person survives on their own valid role evidence, the unproven
+    pairing does not. (The patron gate has dedicated coverage in
+    test_grounding.py, where the fixture text can prove the role.)"""
     text = _load_prepared_text()
     pages_by_url = {PAGE_URL: text}
 
     extraction = SchoolExtraction(
         staff=[
             StaffRecord(
-                name="Jan Kochanowski",  # the school's own patron -- never staff
-                role="other_staff",
-                evidence="Patronem naszej szkoły jest Jan Kochanowski",
-                source_url=PAGE_URL,
-                confidence="high",
-            ),
-            StaffRecord(
-                name="Tomasz Wiśniewski",
-                role="other_teacher",
+                name="Piotr Nowak",
+                role="director",
                 email="anna.kowalska@sptestowo.pl",  # a real email, but NOT this person's
-                email_evidence="mgr Wiśniewski Tomasz",  # doesn't contain the email at all
-                evidence="mgr Wiśniewski Tomasz | wychowanie fizyczne",
+                email_evidence="mgr Nowak Piotr",  # doesn't contain the email at all
+                evidence="mgr Nowak Piotr | Dyrektor, matematyka",
                 source_url=PAGE_URL,
                 confidence="high",
             ),
@@ -115,5 +112,6 @@ def test_full_pipeline_rejects_the_patron_and_a_hallucinated_email_evidence_mism
 
     result = ground_extraction(extraction, pages_by_url, school_name="Szkoła Podstawowa im. Jana Kochanowskiego w Testowie")
     assert len(result.staff) == 1
-    assert result.staff[0].name == "Tomasz Wiśniewski"
+    assert result.staff[0].name == "Piotr Nowak"
     assert result.staff[0].email is None  # wrongly-paired email stripped, person kept
+    assert "anna.kowalska@sptestowo.pl" in result.unattributed_emails

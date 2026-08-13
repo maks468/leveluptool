@@ -38,10 +38,18 @@ def _select_candidate_school_ids(session, limit: int) -> list[int]:
     attempt (success or failed) -- otherwise a handful of dead-end schools
     (no website, unreachable) would get retried forever every cycle instead
     of making room for schools never yet touched. Highest score first, so
-    the most promising schools reach full coverage soonest."""
+    the most promising schools reach full coverage soonest.
+
+    "pending"/"running" items exclude a school too: a manual batch and this
+    auto cycle run on separate threads, and picking a school the manual
+    batch is CURRENTLY mid-way through had both threads writing the same
+    school's contacts at once (two sessions, each blind to the other's
+    uncommitted rows -- duplicate contacts, interleaved last-writer-wins
+    on the School fields). A school legitimately awaiting its turn simply
+    isn't a candidate for a second, simultaneous turn."""
     attempted = (
         session.query(EnrichmentJobItem.school_id)
-        .filter(EnrichmentJobItem.status.in_(["success", "failed"]))
+        .filter(EnrichmentJobItem.status.in_(["success", "failed", "pending", "running"]))
         .distinct()
     )
     rows = (

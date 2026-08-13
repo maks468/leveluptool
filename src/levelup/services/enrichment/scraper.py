@@ -22,6 +22,7 @@ import hashlib
 import os
 import re
 import tempfile
+import threading
 import time
 from urllib.parse import urljoin, urlparse
 
@@ -321,6 +322,14 @@ def _normalize_name_order(candidate: str) -> str | None:
     return None
 
 
+# A match whose immediately-preceding context carries a deputy marker is
+# about the DEPUTY, not the director: "Wicedyrektor: Anna Kowalska" and
+# "Zastępca dyrektora - Jan Nowak" both CONTAIN "dyrektor..." so every
+# keyword-first pattern matches inside them. Python's fixed-width
+# lookbehind can't express this, so it's checked as a window here.
+_DEPUTY_CONTEXT_RE = re.compile(r"(?i:wice|zast[eę]pc|z-ca|p\.\s*o\.)[^,.;\n]{0,25}$")
+
+
 def _earliest_valid_match(text: str, patterns: tuple[re.Pattern, ...]) -> str | None:
     """Confirmed real failure mode: a flattened staff table row often reads
     "Begierska Renata Dyrektor Lenda Kamila Wicedyrektor" (surname,
@@ -332,14 +341,20 @@ def _earliest_valid_match(text: str, patterns: tuple[re.Pattern, ...]) -> str | 
     the wrong one whenever both match. Instead, collect each pattern's
     earliest match and keep whichever one starts first in the text --
     the row a role label actually belongs to is always the name
-    immediately before or after it, never a further one two rows down."""
+    immediately before or after it, never a further one two rows down.
+
+    Matches preceded by a deputy marker (see _DEPUTY_CONTEXT_RE) are
+    skipped entirely: they are statements about the deputy."""
     candidates = []
     for pattern in patterns:
-        match = pattern.search(text)
-        if match:
+        for match in pattern.finditer(text):
+            window_start = max(0, match.start() - 30)
+            if _DEPUTY_CONTEXT_RE.search(text[window_start : match.start()]):
+                continue  # "Wicedyrektor …" / "Zastępca dyrektora …" -- not the director
             normalized = _normalize_name_order(match.group(1).strip())
             if normalized:
                 candidates.append((match.start(), normalized))
+            break  # only each pattern's earliest VALID match competes
     if not candidates:
         return None
     candidates.sort(key=lambda pair: pair[0])
@@ -382,9 +397,20 @@ def _declension_stem_match(a: str, b: str) -> bool:
 
 
 def _is_patron_name(candidate: str, patron_tokens: set[str]) -> bool:
+    """BUG FIX: the candidate was split on WHITESPACE only, while
+    _patron_name_tokens splits the school's "im." clause on every
+    non-letter -- so a hyphenated patron surname never matched. Confirmed
+    against the canonical Polish case: a school "im. Marii
+    Sklodowskiej-Curie" yields tokens {marii, sklodowskiej, curie}, but the
+    candidate "Maria Sklodowska-Curie" stayed one word
+    ("sklodowska-curie") that matched no single token, so the patron passed
+    the filter and could be written as staff. Tokenizing BOTH sides the
+    same way closes it. Narrow by construction: every token must still
+    match a patron token, so a real staff member who merely shares one
+    name part with the patron is unaffected."""
     if not patron_tokens:
         return False
-    words = [w.lower() for w in candidate.split()]
+    words = [w.lower() for w in re.findall(r"[A-Za-zŁŚŻŹĆŃÓĘĄłśżźćńóęą]+", candidate)]
     return bool(words) and all(any(_declension_stem_match(w, token) for token in patron_tokens) for w in words)
 
 
@@ -782,24 +808,53 @@ def _decoded_text(resp: requests.Response) -> str:
 
 
 _FETCH_RETRY_DELAY_SECONDS = 1.5
+# Was a flat 15s. Real school hosts either answer in a couple of seconds or
+# are dead; 15s just parked the (serial) crawler on hopeless hosts. Env-
+# tunable so it can be raised without a code change if a slow-host pattern
+# shows up in the new per-stage timings.
+FETCH_TIMEOUT_SECONDS = float(os.getenv("LEVELUP_FETCH_TIMEOUT", "10"))
+
+# Only genuinely transient statuses are worth a second attempt. A 404 (or
+# any other permanent 4xx) is the single most common failure in this crawl
+# -- every blind COMMON_PROBE_SLUGS guess and every dead nav link produces
+# one -- and retrying it cost a second full request plus a 1.5s sleep for a
+# result that cannot change.
+_RETRYABLE_STATUSES = frozenset({403, 408, 425, 429, 500, 502, 503, 504})
+
+# One pooled Session per thread: without it every fetch paid a fresh TCP +
+# TLS handshake, ~5-6 times per school, all to the same host. Thread-local
+# rather than module-global so a future parallel crawl can't share one
+# Session's connection pool across worker threads.
+_thread_state = threading.local()
+
+
+def _http_session() -> requests.Session:
+    session = getattr(_thread_state, "session", None)
+    if session is None:
+        session = requests.Session()
+        session.headers.update({"User-Agent": USER_AGENT})
+        _thread_state.session = session
+    return session
 
 
 def fetch_page(url: str) -> str | None:
-    """BUG FIX: one short, bounded retry, specifically for a TIMEOUT or an
-    HTTP error response (403/429/5xx) -- confirmed directly across a real
-    batch: several schools' sites logged as "unreachable" turned out to
-    be reachable again just minutes later on a manual recheck (already a
-    known, accepted characteristic of this environment -- see the crawl's
-    own headless-browser retry below), and one returned a 403 specifically,
-    exactly the shape of a transient anti-bot response that often clears
-    a couple seconds later. Deliberately NOT retried for a connection/DNS
-    failure -- an address that flat-out doesn't resolve or refuses the
-    connection right now won't resolve differently a second later in the
-    same run, so retrying it would only add a second full timeout for a
-    genuinely dead site, never a real chance of success."""
+    """BUG FIX: one short, bounded retry, specifically for a TIMEOUT or a
+    TRANSIENT HTTP error response (403/429/5xx and friends) -- confirmed
+    directly across a real batch: several schools' sites logged as
+    "unreachable" turned out to be reachable again just minutes later on a
+    manual recheck (already a known, accepted characteristic of this
+    environment -- see the crawl's own headless-browser retry below), and
+    one returned a 403 specifically, exactly the shape of a transient
+    anti-bot response that often clears a couple seconds later.
+
+    Deliberately NOT retried for: a connection/DNS failure (an address
+    that flat-out doesn't resolve won't resolve differently a second later
+    in the same run), nor a permanent 4xx such as 404 (see
+    _RETRYABLE_STATUSES) -- both only ever added a wasted request plus a
+    sleep to a result that cannot change."""
     for attempt in range(2):
         try:
-            resp = requests.get(url, timeout=15, headers={"User-Agent": USER_AGENT})
+            resp = _http_session().get(url, timeout=FETCH_TIMEOUT_SECONDS)
             resp.raise_for_status()
             return _decoded_text(resp)
         except requests.exceptions.SSLError:
@@ -811,12 +866,18 @@ def fetch_page(url: str) -> str | None:
             # only when strict verification specifically fails is a reasonable
             # trade -- it's not blanket-disabling verification for every site.
             try:
-                resp = requests.get(url, timeout=15, headers={"User-Agent": USER_AGENT}, verify=False)
+                resp = _http_session().get(url, timeout=FETCH_TIMEOUT_SECONDS, verify=False)
                 resp.raise_for_status()
                 return _decoded_text(resp)
             except requests.RequestException:
                 return None
-        except (requests.exceptions.Timeout, requests.exceptions.HTTPError):
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if attempt == 0 and status in _RETRYABLE_STATUSES:
+                time.sleep(_FETCH_RETRY_DELAY_SECONDS)
+                continue
+            return None
+        except requests.exceptions.Timeout:
             if attempt == 0:
                 time.sleep(_FETCH_RETRY_DELAY_SECONDS)
                 continue
@@ -1091,6 +1152,42 @@ def _page_matches_school(html: str, school_name: str) -> bool:
     return any(re.search(rf"{re.escape(stem)}\w*\s+nr\.?\s*{number}\b", haystack) for stem in relevant_stems)
 
 
+_POLISH_FOLD = str.maketrans("ąćęłńóśźż", "acelnoszz")
+
+
+def _school_city_stem(school_name: str) -> str | None:
+    """The trailing "w/we <City>" of a Polish school name, folded to a
+    short stem that survives declension: "W RZESZOWIE" -> "rzes", which
+    matches both "Rzeszów" and "Rzeszowie"; "WE WROCŁAWIU" -> "wroc".
+    None when the name carries no city (nothing to check against)."""
+    m = re.search(r"\bwe?\s+([a-ząćęłńóśźż][\wąćęłńóśźż-]*)\s*$", school_name.strip(), re.IGNORECASE)
+    if not m:
+        return None
+    city = m.group(1).lower().translate(_POLISH_FOLD)
+    return city[:4] if len(city) >= 4 else city
+
+
+def _mentions_school_city(school_name: str, *haystacks: str | None) -> bool:
+    """True when any haystack (page html, URL) mentions the city named in
+    the school's own name -- or trivially when the name has no city.
+
+    The guard that keeps a shared CHAIN domain from donating a sibling
+    branch's page as this school's "own subsite". Confirmed real failure
+    (TEB Rzeszów): the crawler adopted szkolasrednia.teb.pl/miasta/d/
+    swidnica/ -- the Świdnica branch's page, a different city 250 km away
+    -- as the Rzeszów school's website, persisted it, and every subsequent
+    enrichment then read the wrong branch. A page that is genuinely this
+    school's own will mention its city; one that can't clear that bar must
+    never become this school's recorded website."""
+    stem = _school_city_stem(school_name)
+    if stem is None:
+        return True
+    for haystack in haystacks:
+        if haystack and stem in haystack.lower().translate(_POLISH_FOLD):
+            return True
+    return False
+
+
 # A school's site sometimes moves house entirely -- the OLD domain (often
 # a legacy free host like wodip.opole.pl, from an older generation of
 # Polish school hosting) is left running, but every real link on every
@@ -1111,6 +1208,16 @@ def _page_matches_school(html: str, school_name: str) -> bool:
 # path does would be needless, slow, and redundant.
 _MIN_MIGRATION_LINKS = 5
 _MIGRATION_DOMINANCE_RATIO = 0.6
+
+# The homepage's own LLM tier. It used to be merged at _merge's default
+# tier 0 -- the same tier as a BIP staff roster -- which made two
+# downstream tests meaningless: llm_extract.cap_pages ranked the homepage
+# ahead of the school's real "kadra"/"dyrekcja" page for the prompt budget,
+# and needs_escalation's "did the bundle contain a staff-bearing page?"
+# check passed for literally every school. A homepage is a general page:
+# ranked below bip(0), staff listings(1) and kontakt(2), alongside the
+# other general "o-szkole"(3) pages.
+HOMEPAGE_TIER = 3
 
 
 def _detect_domain_migration(soup: BeautifulSoup, base_url: str) -> str | None:
@@ -1269,6 +1376,23 @@ def _prepare_page_for_llm(html: str, url: str) -> str:
     so get_text() can't erase structure it never gets the chance to see."""
     soup = BeautifulSoup(html, "html.parser")
 
+    # Cloudflare's cipher replaces the real address entirely (plain text
+    # only ever shows a "[email protected]" placeholder) -- decode every
+    # instance IN PLACE, so the address sits exactly where the page put it
+    # ("wychowawcy klasy 4a (Anna Kowalska): anna.kowalska@..."). That
+    # positional adjacency is what lets the model quote a REAL contiguous
+    # name+email pairing passage -- and what lets ground_extraction verify
+    # that quote verbatim against this same text (a footer-only decode
+    # destroyed the adjacency, making every cloaked pairing unprovable
+    # under the strict email_evidence check). Done before any structural
+    # flattening so the replacement lands inside its own <td>/<p>.
+    decoded_cf = set()
+    for el in soup.select("[data-cfemail]"):
+        decoded = _decode_cf_email(el.get("data-cfemail", ""))
+        if decoded and EMAIL_RE.fullmatch(decoded):
+            decoded_cf.add(decoded)
+            el.replace_with(decoded)
+
     for br in soup.find_all("br"):
         br.replace_with("\n")
     for row in soup.find_all("tr"):
@@ -1282,30 +1406,20 @@ def _prepare_page_for_llm(html: str, url: str) -> str:
     text = re.sub(r"\n[ \t]*\n+", "\n", text)
     text = _decode_at_dot_obfuscation(text).strip()
 
-    # Cloudflare's cipher replaces the real address entirely (plain text
-    # only ever shows a "[email protected]" placeholder) -- decode every
-    # instance from the DOM's data-cfemail attributes and surface them as
-    # a footer so the model can see the real addresses without parsing
-    # HTML itself. A second, separate soup walk (not the mutated one
-    # above) since the <tr>/<li> replacements already collapsed those
-    # elements to plain strings.
-    cf_soup = BeautifulSoup(html, "html.parser")
-    decoded_cf = sorted(
-        {
-            decoded
-            for el in cf_soup.select("[data-cfemail]")
-            if (decoded := _decode_cf_email(el.get("data-cfemail", ""))) and EMAIL_RE.fullmatch(decoded)
-        }
-    )
+    # Footer kept as well: a summary of every decoded address in one place
+    # (and the marker several tests and prompts reference).
     if decoded_cf:
-        text += "\n\nDECODED_OBFUSCATED_EMAILS: " + ", ".join(decoded_cf)
+        text += "\n\nDECODED_OBFUSCATED_EMAILS: " + ", ".join(sorted(decoded_cf))
 
     # Image/PDF/doc links never appear in flattened text at all (they're
-    # hrefs, not visible text) -- listed here with their label so the
-    # vision path (llm_extract.extract_from_image/_pdf) knows what's worth
-    # downloading without a separate crawl pass.
+    # hrefs, not visible text) -- listed here with their label so a human
+    # (via the staff_roster_urls metadata) knows what's worth checking
+    # manually. A SECOND, unmutated soup: the <tr>/<li> replacements above
+    # collapsed those elements to plain strings, losing any <a href> that
+    # lived inside them.
+    media_soup = BeautifulSoup(html, "html.parser")
     media_links = []
-    for a in cf_soup.select("a[href]"):
+    for a in media_soup.select("a[href]"):
         href = a["href"]
         if href.lower().split("?")[0].endswith(NON_HTML_EXTENSIONS):
             label = re.sub(r"\s+", " ", a.get_text(" ")).strip()
@@ -1380,17 +1494,21 @@ def _extract(html: str, url: str, school_name: str = "") -> dict:
     english_teacher_name = _english_teacher_from_entries(soup, patron_tokens)
     # FALLBACK: the header-group layout ("Język angielski:" then a LIST of
     # names in separate elements) has the keyword and names in DIFFERENT
-    # entries, so no single entry holds both. Only here is keyword-first on
-    # the flattened text the right reading -- and it runs only when the
-    # per-entry pass found nothing, so it can't override a correct match.
+    # entries, so no single entry holds both. Runs only when the per-entry
+    # pass found nothing, so it can't override a correct match. Uses the
+    # SAME earliest-position arbitration as the director path -- the old
+    # fixed keyword-first priority re-created exactly the bug
+    # _earliest_valid_match documents: on flattened "Jan Nowak - język
+    # angielski   Anna Kowalska - matematyka" the keyword-first pattern
+    # binds "język angielski" to the NEXT person (Anna), while the
+    # name-first pattern reads the right one; whichever match starts
+    # earliest in the text is the row the keyword actually belongs to.
     if english_teacher_name is None:
-        for pattern in (ENGLISH_TEACHER_RE, ENGLISH_TEACHER_NAME_FIRST_RE, ENGLISH_TEACHER_ROLE_LIST_RE):
-            match = pattern.search(text)
-            if match:
-                normalized = _normalize_name_order(match.group(1).strip())
-                if normalized and not _is_patron_name(normalized, patron_tokens):
-                    english_teacher_name = normalized
-                    break
+        candidate = _earliest_valid_match(
+            text, (ENGLISH_TEACHER_RE, ENGLISH_TEACHER_NAME_FIRST_RE, ENGLISH_TEACHER_ROLE_LIST_RE)
+        )
+        if candidate and not _is_patron_name(candidate, patron_tokens):
+            english_teacher_name = candidate
 
     return {
         "director_name": director_name,
@@ -1636,7 +1754,7 @@ def _scrape_with_browser(homepage: str, school_name: str, result: dict, sources_
                     return False
                 rendered_any = True
                 found = _extract(html, homepage, school_name)
-                _merge(result, found)
+                _merge(result, found, tier=HOMEPAGE_TIER)
                 frontier: list[tuple[int, str]] = list(found["subpage_links"])
 
                 while frontier and pages_rendered < MAX_RENDERED_PAGES and not _is_complete(result):
@@ -1962,13 +2080,15 @@ def scrape_school_website(
                 # Some private/international school groups share ONE
                 # domain across several legally-separate schools -- this
                 # page's own contact info (if any) is the FOUNDATION's,
-                # not necessarily this specific school's. Try to reach
-                # the dedicated subsite first; only trust this page's own
-                # extraction if that search comes up empty.
-                hub_fallback_found = found
+                # not necessarily this specific school's. Only the
+                # dedicated subsite (if found via the frontier below) may
+                # contribute data; the hub page itself never does (see
+                # the accuracy-policy note where hub_fallback_found was
+                # previously merged).
+                hub_fallback_found = found  # kept for the subsite search only
                 frontier.extend(found["subpage_links"])
             else:
-                _merge(result, found)
+                _merge(result, found, tier=HOMEPAGE_TIER)
                 _note_cloak(found)
                 frontier.extend(found["subpage_links"])
                 if not found["subpage_links"]:
@@ -2001,12 +2121,16 @@ def scrape_school_website(
                 time.sleep(REQUEST_DELAY_SECONDS)
                 candidate_html = fetch_page(candidate)
                 pages_fetched += 1
-                if candidate_html and _page_matches_school(candidate_html, school_name):
+                if (
+                    candidate_html
+                    and _page_matches_school(candidate_html, school_name)
+                    and _mentions_school_city(school_name, candidate_html, candidate)
+                ):
                     sources_checked.append({"url": candidate, "status": "ok", "hub_candidate_matched": True})
                     own_school_subsite_url = candidate
                     visited.add(_dedup_key(candidate))
                     candidate_found = _extract(candidate_html, candidate, school_name)
-                    _merge(result, candidate_found)
+                    _merge(result, candidate_found, tier=HOMEPAGE_TIER)  # a subsite's own homepage
                     _note_cloak(candidate_found)
                     frontier.extend(
                         pair for pair in candidate_found["subpage_links"] if _dedup_key(pair[1]) not in visited
@@ -2038,6 +2162,7 @@ def scrape_school_website(
                     tier == -1
                     and own_school_subsite_url is None
                     and not _same_organization_host(link, effective_homepage)
+                    and _mentions_school_city(school_name, sub_html, link)
                 ):
                     # A genuine sibling-school link on a shared-domain hub
                     # lives on its OWN subdomain (sp.foo.pl vs. foo.pl) --
@@ -2046,19 +2171,25 @@ def scrape_school_website(
                     # share a level-word with the school's own name (e.g.
                     # a "kursy maturalne" fee page mentioning "matematyka
                     # podstawowa", which isn't this school's own site at
-                    # all despite matching the same tier).
+                    # all despite matching the same tier). The city check
+                    # (_mentions_school_city) is what tells this school's
+                    # OWN subsite apart from a SIBLING BRANCH of the same
+                    # chain in another city (the TEB Rzeszów/Świdnica
+                    # failure) -- adopting that poisons every future run.
                     own_school_subsite_url = link
                 frontier.extend(pair for pair in found["subpage_links"] if _dedup_key(pair[1]) not in visited)
             else:
                 sources_checked.append({"url": link, "status": "unreachable"})
 
-        # Never found the school's own dedicated subsite -- the hub page
-        # is the best we've got, so its contact info is used as a last
-        # resort (still tagged with the hub's real, working URL, not the
-        # broken one originally on file).
-        if hub_fallback_found and own_school_subsite_url is None:
-            _merge(result, hub_fallback_found)
-            _note_cloak(hub_fallback_found)
+        # Never found the school's own dedicated subsite. The hub page is
+        # NOT used as a data source anymore (accuracy policy): a shared
+        # hub describes the umbrella organization or a SIBLING school, so
+        # "the first Dyrektor named on it" is routinely someone else's
+        # director, and even a personal-looking email on it can belong to
+        # a same-named person at another school in the group. Without a
+        # confirmed own-subsite, this school contributes nothing from the
+        # hub -- blank beats a neighbor's contact. (The hub's URL still
+        # appears in sources_checked above, so the attempt is visible.)
 
         if own_school_subsite_url:
             result["discovered_website_url"] = own_school_subsite_url

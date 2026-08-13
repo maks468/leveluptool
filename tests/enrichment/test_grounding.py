@@ -15,7 +15,10 @@ PAGE_URL = "https://real.pl/kadra"
 PAGES = {
     PAGE_URL: (
         "Dyrektor: Jan Kowalski. Kontakt: jan.kowalski@real.pl. "
-        "Wicedyrektor Nowak Maria (surname-first)."
+        "Wicedyrektor Nowak Maria (surname-first). "
+        # Present so the patron test below can be about the PATRON gate
+        # rather than being vacuously dropped by an earlier check.
+        "Dyrektor Maria Sklodowska-Curie (patron w tresci strony)."
     ),
 }
 SCHOOL_NAME = "Szkola Podstawowa im. Marii Sklodowskiej-Curie"
@@ -57,15 +60,34 @@ def test_email_demoted_when_evidence_does_not_tie_name_and_email_together():
 
 def test_wrong_source_url_is_dropped():
     extraction = SchoolExtraction(
-        staff=[_record(name="Ktos Inny", role="other_teacher", evidence="x", source_url="https://not-given.pl/page")]
+        staff=[_record(name="Ktos Inny", evidence="x", source_url="https://not-given.pl/page")]
     )
     result = ground_extraction(extraction, PAGES, school_name=SCHOOL_NAME)
     assert result.staff == []
 
 
 def test_patron_name_is_rejected():
+    """Uses a writeable role AND a real role-proving quote, so the record
+    reaches (and must be stopped by) the patron gate itself -- with a
+    non-target role it would be dropped earlier and prove nothing."""
     extraction = SchoolExtraction(
-        staff=[_record(name="Maria Sklodowska-Curie", role="other_staff", evidence="patron")]
+        staff=[
+            _record(
+                name="Maria Sklodowska-Curie",
+                evidence="Dyrektor Maria Sklodowska-Curie",
+            )
+        ]
+    )
+    result = ground_extraction(extraction, PAGES, school_name=SCHOOL_NAME)
+    assert result.staff == []
+
+
+def test_non_writeable_roles_are_dropped():
+    """other_teacher/other_staff are accepted by the schema (so one stray
+    record can't void an entire extraction) but nothing downstream can
+    write them, so grounding discards them."""
+    extraction = SchoolExtraction(
+        staff=[_record(role="other_teacher"), _record(role="other_staff")]
     )
     result = ground_extraction(extraction, PAGES, school_name=SCHOOL_NAME)
     assert result.staff == []

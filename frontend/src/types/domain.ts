@@ -305,9 +305,25 @@ export interface LibraryFilters {
   include_adult_education: boolean
   /** Dedicated special-needs institutions: show all, only them, or exclude them. */
   special_needs: SpecialNeedsFilter
+  /** What enrichment has found for the school -- the same levels the
+   * Enrichment column badges show, plus the "any level"/"no level" split,
+   * and separately whether enrichment has ever run against it at all
+   * ("attempted"/"never_attempted", regardless of what it found). */
+  enrichment: EnrichmentFilter
+  /** Whether the school has already been pulled into the pipeline. */
+  pipeline_status: PipelineStatusFilter
 }
 
 export type SpecialNeedsFilter = "all" | "only" | "exclude"
+
+export type EnrichmentFilter =
+  | "all"
+  | EnrichmentLevel
+  | "enriched"
+  | "attempted"
+  | "never_attempted"
+
+export type PipelineStatusFilter = "all" | "in" | "out"
 
 export type SavedViewScope = "library" | "pipeline"
 
@@ -357,4 +373,6 @@ export const DEFAULT_LIBRARY_FILTERS: LibraryFilters = {
   score_include_unscored: true,
   include_adult_education: true,
   special_needs: "all",
+  enrichment: "all",
+  pipeline_status: "all",
 }

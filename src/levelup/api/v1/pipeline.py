@@ -89,6 +89,23 @@ def _describe_pull_criteria(filters: dict, limit: int | None) -> str:
         parts.append("special-needs only")
     elif special_needs == "exclude":
         parts.append("excl. special-needs")
+
+    enrichment_labels = {
+        "enriched": "enriched",
+        "not_enriched": "not enriched",
+        "successful": "enrichment: successful",
+        "partial": "enrichment: partial",
+        "basic": "enrichment: basic",
+        "attempted": "enrichment attempted",
+        "never_attempted": "never enriched",
+    }
+    if filters.get("enrichment") in enrichment_labels:
+        parts.append(enrichment_labels[filters["enrichment"]])
+    # "out" is the pull default in spirit -- pulling can't add a school
+    # that's already in the pipeline -- so only "in" is worth recording.
+    if filters.get("pipeline_status") == "in":
+        parts.append("already in pipeline")
+
     if limit is not None:
         parts.append(f"top {limit}")
 

@@ -6,7 +6,7 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import and_, false, func, or_
+from sqlalchemy import and_, exists, false, func, not_, or_
 from sqlalchemy.orm import Session
 
 from levelup.api.v1.schemas import (
@@ -19,12 +19,18 @@ from levelup.api.v1.schemas import (
 )
 from levelup.core.db import get_session
 from levelup.core.security import get_current_user
-from levelup.models.enrichment import SchoolContact
+from levelup.models.enrichment import EnrichmentJobItem, SchoolContact
 from levelup.models.pipeline import ActivityLog, ActivityType, PipelineState
 from levelup.models.school import EvidenceSource, School
 from levelup.models.score import CurrentScore, SchoolScore
 from levelup.models.user import User
-from levelup.services.enrichment.verifier import email_priority
+from levelup.services.enrichment.verifier import (
+    DATA_PROTECTION_LOCAL_PARTS,
+    GENERIC_OFFICE_LOCAL_PARTS,
+    LAST_RESORT_LOCAL_PARTS,
+    THIRD_PARTY_VENDOR_DOMAINS,
+    email_priority,
+)
 
 _URL_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
 
@@ -63,8 +69,27 @@ def _apply_filters(
     score_include_unscored: bool = True,
     include_adult_education: bool = True,
     special_needs: str = "all",
+    enrichment: str = "all",
+    pipeline_status: str = "all",
 ):
     query = query.filter(School.is_active.is_(True))
+
+    # What contact data enrichment has actually produced for a school --
+    # "enriched"/"not_enriched" for the plain split, the three individual
+    # levels for narrowing further, "never_attempted" for schools enrichment
+    # has never been run against at all. See _enrichment_predicate.
+    enrichment_predicate = _enrichment_predicate(enrichment)
+    if enrichment_predicate is not None:
+        query = query.filter(enrichment_predicate)
+
+    # Pipeline membership. "out" is the one that makes the Library a working
+    # queue -- it hides everything already pulled, so what's left is what
+    # hasn't been worked yet (the same thing the voivodeship/city facet
+    # counts have always meant).
+    if pipeline_status == "in":
+        query = query.filter(exists().where(PipelineState.school_id == School.id))
+    elif pipeline_status == "out":
+        query = query.filter(not_(exists().where(PipelineState.school_id == School.id)))
 
     # Dedicated special-needs institutions carry a non-null `specialty`
     # (set from the official name -- see scraper._detect_specialties).
@@ -196,6 +221,102 @@ def _compute_enrichment_levels(session: Session, school_ids: list[int]) -> dict[
     return levels
 
 
+# --- The same enrichment levels, as SQL -------------------------------------
+#
+# _compute_enrichment_levels above is the readable definition, but it runs in
+# Python over already-fetched contact rows: fine for the 50 rows of one page,
+# useless as a Library filter, which has to narrow, count and paginate across
+# the whole ~25k-school register before any rows are fetched. The predicates
+# below express the identical rules as correlated EXISTS subqueries so the
+# database can do it.
+#
+# Two definitions of one concept is a drift risk, so it's pinned down by a
+# test: tests/api/test_library_filters.py runs both over every school in the
+# database and fails if any school is labelled differently. Change one, and
+# the suite tells you to change the other.
+
+_EMAIL_SEPARATORS = (".", "_", "+", "-")
+
+
+def _sql_is_priority_email(col):
+    """Mirrors `email_priority(email) == 0` -- an address that is not a known
+    shared office mailbox, not recruitment-only, not a RODO/data-protection
+    channel, and not an outsourced vendor's.
+
+    The local-part prefix tests run against the whole address instead of
+    slicing the local part out first: every pattern is a local-part prefix
+    and none contains "@", so "the local part starts with p" and "the address
+    starts with p" are the same test -- and for a pattern longer than the
+    local part, the "@" is what stops the match, exactly as the Python side's
+    startswith() does. No pattern contains a LIKE wildcard, so none needs
+    escaping."""
+    lowered = func.lower(col)
+    separatorless = lowered
+    for char in _EMAIL_SEPARATORS:
+        separatorless = func.replace(separatorless, char, "")
+
+    disqualifying = [separatorless.like(f"{p}%") for p in DATA_PROTECTION_LOCAL_PARTS]
+    for vendor in THIRD_PARTY_VENDOR_DOMAINS:
+        disqualifying.append(lowered.like(f"%@{vendor}"))
+        disqualifying.append(lowered.like(f"%.{vendor}"))
+    disqualifying += [lowered.like(f"{p}%") for p in LAST_RESORT_LOCAL_PARTS]
+    disqualifying += [lowered.like(f"{p}%") for p in GENERIC_OFFICE_LOCAL_PARTS]
+
+    return and_(col.isnot(None), col != "", not_(or_(*disqualifying)))
+
+
+def _contact_exists(*conditions):
+    return exists().where(and_(SchoolContact.school_id == School.id, *conditions))
+
+
+def _enrichment_predicate(enrichment: str):
+    """SQL condition for one Library enrichment filter value, or None for
+    "all" (and for anything unrecognized, which is treated the same way --
+    an unknown value narrows nothing rather than silently emptying the
+    Library)."""
+    named = and_(SchoolContact.person_name.isnot(None), SchoolContact.person_name != "")
+
+    has_priority_email = _contact_exists(
+        SchoolContact.contact_type.in_(("director", "english_coordinator")),
+        _sql_is_priority_email(SchoolContact.email),
+    )
+    teacher_named = _contact_exists(SchoolContact.contact_type == "english_coordinator", named)
+    director_named = _contact_exists(SchoolContact.contact_type == "director", named)
+    general_email = _contact_exists(
+        SchoolContact.contact_type == "general",
+        SchoolContact.email.isnot(None),
+        SchoolContact.email != "",
+    )
+
+    # successful | partial | basic collapses to this: partial and basic each
+    # re-test the higher levels only to stay mutually exclusive, which a
+    # union doesn't need.
+    any_level = or_(has_priority_email, teacher_named, and_(director_named, general_email))
+
+    # An enrichment job item is written for every school a run covers,
+    # whatever it finds -- so its mere existence is the record that the
+    # school was tried, independent of the outcome.
+    attempted = exists().where(EnrichmentJobItem.school_id == School.id)
+
+    return {
+        "successful": has_priority_email,
+        "partial": and_(not_(has_priority_email), teacher_named),
+        "basic": and_(
+            not_(has_priority_email), not_(teacher_named), director_named, general_email
+        ),
+        "enriched": any_level,
+        "not_enriched": not_(any_level),
+        # A different question from the levels above: those ask what
+        # enrichment FOUND, these ask whether it ever RAN. Neither implies
+        # the other -- a run that came back empty is attempted but not
+        # enriched, and a school carrying RSPO-backfilled director contacts
+        # (see cli/backfill_rspo_directors.py) is enriched without ever
+        # having been attempted.
+        "attempted": attempted,
+        "never_attempted": not_(attempted),
+    }.get(enrichment)
+
+
 def _compute_best_emails(session: Session, school_ids: list[int]) -> dict[int, str | None]:
     """The single best contact email per school for an outreach campaign:
     a decision-maker's OWN (personal-verified) address first -- director,
@@ -289,6 +410,8 @@ def list_schools(
     score_include_unscored: bool = True,
     include_adult_education: bool = True,
     special_needs: str = "all",
+    enrichment: str = Query("all", description="all|enriched|not_enriched|successful|partial|basic|attempted|never_attempted"),
+    pipeline_status: str = Query("all", description="all|in|out -- whether the school is already in the pipeline"),
     sort: str = "score:desc",
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
@@ -311,6 +434,8 @@ def list_schools(
         score_include_unscored=score_include_unscored,
         include_adult_education=include_adult_education,
         special_needs=special_needs,
+        enrichment=enrichment,
+        pipeline_status=pipeline_status,
     )
 
     total = query.count()
@@ -361,6 +486,8 @@ def count_schools(
     score_include_unscored: bool = True,
     include_adult_education: bool = True,
     special_needs: str = "all",
+    enrichment: str = Query("all", description="all|enriched|not_enriched|successful|partial|basic|attempted|never_attempted"),
+    pipeline_status: str = Query("all", description="all|in|out -- whether the school is already in the pipeline"),
 ):
     query = _apply_filters(
         _base_query(session).with_entities(School.id),
@@ -379,6 +506,8 @@ def count_schools(
         score_include_unscored=score_include_unscored,
         include_adult_education=include_adult_education,
         special_needs=special_needs,
+        enrichment=enrichment,
+        pipeline_status=pipeline_status,
     )
     return {"count": query.count()}
 
@@ -401,6 +530,8 @@ def list_school_ids(
     score_include_unscored: bool = True,
     include_adult_education: bool = True,
     special_needs: str = "all",
+    enrichment: str = Query("all", description="all|enriched|not_enriched|successful|partial|basic|attempted|never_attempted"),
+    pipeline_status: str = Query("all", description="all|in|out -- whether the school is already in the pipeline"),
 ):
     """Every school id matching the given filters, across every page --
     lets the Library's "select all N matching my filters" checkbox act on
@@ -423,6 +554,8 @@ def list_school_ids(
         score_include_unscored=score_include_unscored,
         include_adult_education=include_adult_education,
         special_needs=special_needs,
+        enrichment=enrichment,
+        pipeline_status=pipeline_status,
     )
     return {"ids": [row[0] for row in query.all()]}
 
@@ -445,6 +578,8 @@ def export_schools_csv(
     score_include_unscored: bool = True,
     include_adult_education: bool = True,
     special_needs: str = "all",
+    enrichment: str = Query("all", description="all|enriched|not_enriched|successful|partial|basic|attempted|never_attempted"),
+    pipeline_status: str = Query("all", description="all|in|out -- whether the school is already in the pipeline"),
     sort: str = "score:desc",
 ):
     """CSV export of a filtered Library segment -- for handing a batch to a
@@ -467,6 +602,8 @@ def export_schools_csv(
         score_include_unscored=score_include_unscored,
         include_adult_education=include_adult_education,
         special_needs=special_needs,
+        enrichment=enrichment,
+        pipeline_status=pipeline_status,
     )
     field_name, _, direction = sort.partition(":")
     sort_col = SORTABLE_FIELDS.get(field_name, SchoolScore.total_score)

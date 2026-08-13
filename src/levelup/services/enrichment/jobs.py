@@ -4,7 +4,8 @@ rest of the batch -- each item's status/error is tracked independently.
 
 from __future__ import annotations
 
-import os
+import re
+import time
 from datetime import datetime, timezone
 
 from levelup.core.db import SessionLocal
@@ -14,8 +15,7 @@ from levelup.models.school import EvidenceSource, School
 from levelup.services.enrichment import llm_extract
 from levelup.services.enrichment.rspo_detail import fetch_rspo_detail, parse_director_and_contacts
 from levelup.services.enrichment.scraper import (
-    augment_with_web_search,
-    download_for_vision,
+    _mentions_school_city,
     finalize_scrape_result,
     scrape_school_website,
 )
@@ -33,6 +33,23 @@ RSPO_SOURCE_URL_PREFIX = "https://rspo.gov.pl/api/Institution/"
 
 _CONFIDENCE_RANK = {"high": 0, "medium": 1, "low": 2}
 
+# Roster image/PDF links are lifted straight out of the prepared page text
+# (scraper._prepare_page_for_llm already appends an IMAGE_OR_PDF_LINKS
+# footer). The model used to be asked for these, which meant paying output
+# tokens for a list nothing extracts from -- vision extraction was removed
+# under the accuracy policy, so they exist purely as a "worth a human
+# look" hint.
+_MEDIA_URL_RE = re.compile(r"https?://\S+")
+
+
+def _roster_media_urls(llm_pages: list[dict], limit: int = 10) -> list[str]:
+    urls: list[str] = []
+    for page in llm_pages:
+        _, marker, tail = (page.get("text") or "").partition("IMAGE_OR_PDF_LINKS:")
+        if marker:
+            urls.extend(_MEDIA_URL_RE.findall(tail))
+    return list(dict.fromkeys(urls))[:limit]
+
 
 def _pick_best_staff(staff: list, roles: tuple[str, ...], url_to_tier: dict[str, int]):
     """Highest confidence wins per role; ties broken by staff-tier source
@@ -45,22 +62,43 @@ def _pick_best_staff(staff: list, roles: tuple[str, ...], url_to_tier: dict[str,
     if not candidates:
         return None
     role_rank = {role: i for i, role in enumerate(roles)}
+    # Final (name, source_url) key: full ties previously fell back to model
+    # output order, so re-running enrichment could pick a DIFFERENT person
+    # each time. Selection must be deterministic.
     return min(
         candidates,
-        key=lambda s: (role_rank[s.role], _CONFIDENCE_RANK.get(s.confidence, 9), url_to_tier.get(s.source_url, 99)),
+        key=lambda s: (
+            role_rank[s.role],
+            _CONFIDENCE_RANK.get(s.confidence, 9),
+            url_to_tier.get(s.source_url, 99),
+            s.name,
+            s.source_url,
+        ),
     )
+
+
+def _same_person(a: str | None, b: str | None) -> bool:
+    """Same human, tolerant of word order ("Kudyba Jadwiga" == "Jadwiga
+    Kudyba") but nothing looser -- this guards field mixing, so a partial
+    overlap must NOT count."""
+    if not a or not b:
+        return False
+    return sorted(a.strip().lower().split()) == sorted(b.strip().lower().split())
 
 
 def _resolve_email(record, all_emails: list[str], name: str | None) -> str | None:
     """Email attribution priority: (1) the LLM's own pairing on `record`,
-    once it has survived grounding validation (ground_extraction/
-    ground_vision_extraction already stripped anything not verifiably
-    tied to this specific person); (2) the existing structural match
-    (is_personal_email_for) over every email the crawl ever saw. LLM
-    pairing is trusted first since it can use context the structural
-    matcher can't (e.g. disambiguating which of two same-surname
-    candidates a table row's email actually belongs to)."""
-    if record is not None and record.email:
+    once it has survived grounding validation AND only when the record is
+    about the SAME person whose name is being written -- confirmed real
+    failure (TEB Rzeszów): RSPO's registry won the director NAME (Jadwiga
+    Kudyba) while the LLM's grounded director record described a different
+    person (Izabela Józefowska), and this function blindly attached the
+    record's email to the registry's name, publishing one person's name
+    with another person's address. Fields must never be mixed across two
+    different humans. (2) the structural match (is_personal_email_for)
+    over every email the crawl ever saw -- inherently safe, it validates
+    against the exact name being written."""
+    if record is not None and record.email and _same_person(record.name, name):
         return record.email
     return next((e for e in all_emails if is_personal_email_for(e, name)), None)
 
@@ -91,15 +129,28 @@ def _run_llm_extraction(result: dict, school: School, still_needed_roles: set[st
         return None, stats
 
     raw_pages = result.get("llm_pages") or []
-    pages = llm_extract.cap_pages(
-        [
-            llm_extract.PreparedPage(url=p["url"], text=p["text"], tier=p["tier"], third_party=p["third_party"])
-            for p in raw_pages
-        ]
-    )
+    # A third-party page can never ORIGINATE a person/role claim
+    # (ground_extraction drops any record citing one), so paying to send it
+    # is pure waste. Dropped before the budget is spent, freeing that room
+    # for the school's own pages.
+    candidates = [
+        llm_extract.PreparedPage(url=p["url"], text=p["text"], tier=p["tier"], third_party=p["third_party"])
+        for p in raw_pages
+        if not p["third_party"]
+    ]
+    # Then drop pages that cannot prove any role we could actually write.
+    # Provably lossless -- see llm_extract.pages_that_could_prove.
+    writeable_roles = ("director", "english_teacher")
+    candidates = llm_extract.pages_that_could_prove(candidates, writeable_roles)
+    pages = llm_extract.cap_pages(candidates)
+    stats["llm_pages_sent"] = len(pages)
+    stats["llm_chars_sent"] = sum(len(p.text) for p in pages)
     if not pages:
+        # Nothing in the crawl could yield a writeable contact -- skipping
+        # the call entirely costs nothing and saves a whole round trip.
         return None, stats
     pages_by_url = {p.url: p.text for p in pages}
+    third_party_urls: set[str] = set()  # none survive the filter above
 
     def _call(model: str):
         usage: dict = {}
@@ -121,9 +172,22 @@ def _run_llm_extraction(result: dict, school: School, still_needed_roles: set[st
         return None, stats
 
     if extraction is not None:
-        extraction = llm_extract.ground_extraction(extraction, pages_by_url, school.name)
+        extraction = llm_extract.ground_extraction(extraction, pages_by_url, school.name, third_party_urls)
 
-    if llm_extract.needs_escalation(extraction, pages, still_needed_roles):
+    # Escalation is judged on what the routine call actually PROVED, not on
+    # the pre-LLM state. still_needed_roles was computed before any LLM ran,
+    # so judging by it sent the expensive Opus call (full page bundle
+    # re-sent) for nearly every school -- including ones where Haiku had
+    # already span-grounded the very roles being "escalated for". A role
+    # only stays needed if the grounded routine result has no writeable
+    # (high/medium) record for it.
+    roles_unproven = set(still_needed_roles)
+    if extraction is not None:
+        for record in extraction.staff:
+            if record.confidence in ("high", "medium"):
+                roles_unproven.discard(record.role)
+
+    if roles_unproven and llm_extract.needs_escalation(extraction, pages, roles_unproven):
         try:
             escalated = _call(llm_extract.OPUS_MODEL)
             stats["escalations"] += 1
@@ -132,65 +196,31 @@ def _run_llm_extraction(result: dict, school: School, still_needed_roles: set[st
             # routine call already produced rather than discarding it too.
             escalated = None
         if escalated is not None:
-            extraction = llm_extract.ground_extraction(escalated, pages_by_url, school.name)
+            escalated = llm_extract.ground_extraction(escalated, pages_by_url, school.name, third_party_urls)
+            if extraction is None:
+                extraction = escalated
+            else:
+                # Escalation FILLS GAPS, never clobbers: the routine call's
+                # grounded records survive; Opus contributes only roles the
+                # routine pass didn't ground at all. (Previously the whole
+                # routine result was replaced, so a correct high-confidence
+                # Haiku record could be silently discarded.)
+                have_roles = {r.role for r in extraction.staff}
+                extraction.staff.extend(r for r in escalated.staff if r.role not in have_roles)
+                extraction.unattributed_emails = list(
+                    dict.fromkeys([*extraction.unattributed_emails, *escalated.unattributed_emails])
+                )
 
     return extraction, stats
 
 
-def _run_vision_extraction(extraction, school: School, still_needed_roles: set[str], stats: dict):
-    """At most 3 vision calls (Opus), and only while a role this school
-    still lacks remains missing after the text extraction above -- a
-    staff roster published only as an image or scanned PDF is otherwise
-    invisible to every text-based path (regex and LLM-text alike). Mutates
-    `stats` in place (vision_calls/token counts) and returns the extraction
-    with any newly-found, grounded staff appended."""
-    if extraction is None or not still_needed_roles:
-        return extraction
-    candidate_urls = list(extraction.staff_roster_image_or_pdf_urls)[: llm_extract.MAX_VISION_CALLS_PER_SCHOOL]
-    if not candidate_urls:
-        return extraction
-
-    website_domain = None
-    if school.website_url:
-        from urllib.parse import urlparse
-
-        netloc = urlparse(school.website_url).netloc.lower()
-        website_domain = netloc[4:] if netloc.startswith("www.") else netloc
-
-    for url in candidate_urls:
-        if not still_needed_roles:
-            break
-        path = download_for_vision(url)
-        if path is None:
-            continue
-        usage: dict = {}
-        try:
-            reader = llm_extract.extract_from_pdf if path.lower().endswith(".pdf") else llm_extract.extract_from_image
-            vision_result = reader(path, url, school.name, school.city, usage_out=usage)
-        except llm_extract.CliUnavailableError:
-            # Couldn't connect for THIS call -- every further vision
-            # attempt this school would fail identically, so stop trying
-            # rather than retrying per-URL. UsageLimitError deliberately
-            # propagates uncaught (must stop the whole batch, not just
-            # vision).
-            break
-        finally:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-        stats["vision_calls"] += 1
-        stats["llm_input_tokens"] += usage.get("input_tokens", 0)
-        stats["llm_output_tokens"] += usage.get("output_tokens", 0)
-        if vision_result is None:
-            continue
-        vision_result = llm_extract.ground_vision_extraction(vision_result, school_website_domain=website_domain)
-        for record in vision_result.staff:
-            if record.role in still_needed_roles:
-                extraction.staff.append(record)
-                still_needed_roles.discard(record.role)
-
-    return extraction
+# NOTE(accuracy policy): the previous vision-extraction path (reading staff
+# rosters published as images/PDFs with a vision model) was removed from the
+# write pipeline on purpose. A vision result cannot be span-grounded against
+# fetched page text the way ground_extraction verifies llm_text records, so
+# under the "never write unverified data" policy it may not create contacts.
+# Roster image/PDF URLs the text model spots are surfaced in the activity
+# metadata (staff_roster_urls) for a human to check manually instead.
 
 
 def _upsert_contact(
@@ -208,28 +238,36 @@ def _upsert_contact(
     evidence: str | None = None,
     extraction_method: str | None = None,
 ) -> None:
-    """Re-enriching the same school repeatedly (re-clicking "Enrich", or a
-    bulk batch that happens to include an already-enriched school) used to
-    insert a brand-new SchoolContact row every time, even when it was the
-    exact same person found again -- a school could end up listing its own
-    director five times. Matching on (school_id, contact_type, normalized
-    name) tells "the same person, found again" apart from "a genuinely
-    different person in the same role" (e.g. two distinct English
-    teachers), updating the former in place and only inserting a new row
-    for the latter."""
+    """Each slot (school_id, contact_type) holds exactly ONE current
+    contact. Historically a differing name was APPENDED next to the old
+    one, so every past mis-extraction stayed on screen forever -- a school
+    could show several "directors" at once, which is exactly the "random
+    people in random spots" symptom users reported. Now a newly verified
+    person REPLACES the slot's previous occupant (the new record has just
+    passed the strictest gate in the pipeline, span-grounding + the
+    confidence floor -- it is strictly better evidence than any older row).
+
+    Degradation guard: when re-finding the SAME person without an email/
+    phone this time, the previously stored email/phone is kept rather than
+    wiped -- a run that proves less than last time must not destroy what
+    was already proven."""
     normalized_name = person_name.strip().lower() if person_name else None
     existing = session.query(SchoolContact).filter_by(school_id=school_id, contact_type=contact_type).all()
-    match = next(
-        (c for c in existing if (c.person_name.strip().lower() if c.person_name else None) == normalized_name),
-        None,
-    )
+    match = None
+    for row in existing:
+        row_name = row.person_name.strip().lower() if row.person_name else None
+        if row_name == normalized_name:
+            match = row
+        else:
+            session.delete(row)  # superseded occupant of this slot
     if match:
+        kept_email = email or match.email
         match.person_name = person_name
-        match.email = email
-        match.phone = phone
+        match.email = kept_email
+        match.phone = phone or match.phone
         match.source_url = source_url
         match.enrichment_job_id = job_id
-        match.contact_quality = quality
+        match.contact_quality = classify_contact_quality(person_name, kept_email) if person_name else quality
         match.confidence = confidence
         match.evidence = evidence
         match.extraction_method = extraction_method
@@ -250,31 +288,6 @@ def _upsert_contact(
                 extraction_method=extraction_method,
             )
         )
-
-
-def _would_be_enriched(director_name: str | None, teacher_name: str | None, result: dict, rspo_info: dict) -> bool:
-    """True when RSPO's own registry plus the school's own website crawl
-    already leave this school better than "not_enriched" (see
-    schools.py's _compute_enrichment_levels), so a web search would be
-    pure waste. Mirrors that function's own conditions exactly:
-    - "partial"/"successful" both require the English teacher's name --
-      already covered by the `teacher_name` check alone.
-    - "basic" requires the director's name AND some school email on
-      file -- checked here against the same non-school-email filter
-      (RODO/vendor addresses) the real contact-building step below
-      applies, so a discarded address can't be mistaken for a real one.
-    - A priority (personal-verified) email on the director implies both
-      a name AND an email are present, which the checks above already
-      require -- there's no path to "successful" this function would miss.
-    Deliberately conservative: search only ever runs when this is False,
-    i.e. only as an actual last resort, never as a first attempt and
-    never just to fill in one remaining field on an already-useful entry."""
-    if teacher_name:
-        return True
-    if not director_name:
-        return False
-    candidates = [*result.get("all_emails", []), rspo_info.get("email")]
-    return any(c and not is_non_school_email(c) for c in candidates)
 
 
 def reap_orphaned_jobs(session) -> int:
@@ -348,12 +361,25 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
     # FIRST, before any website scraping. It never has the English
     # teacher's name, so the website is still crawled regardless,
     # but a director name found here always wins over a scraped one.
+    # Per-stage wall-clock, logged in the activity metadata. Without it the
+    # cost of a stage could only be inferred by correlating totals across
+    # schools -- which is how a 3.9-hour outlier stayed unexplainable.
+    timings: dict[str, int] = {}
+    started = time.perf_counter()
+
+    def _mark(stage: str) -> None:
+        nonlocal started
+        now = time.perf_counter()
+        timings[f"{stage}_ms"] = int((now - started) * 1000)
+        started = now
+
     rspo_info: dict = {}
     detail = None
     if school.rspo_id:
         detail = fetch_rspo_detail(school.rspo_id)
         if detail:
             rspo_info = parse_director_and_contacts(detail)
+    _mark("rspo")
 
     # RSPO's own registry is the authoritative record of whether
     # an institution still operates at all -- confirmed
@@ -397,6 +423,7 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
         school.website_url = rspo_info.get("website")
 
     result = scrape_school_website(school.name, effective_website, rspo_email=rspo_info.get("email"))
+    _mark("crawl")
 
     # Special-education population(s) detected from the site,
     # the school's own name, AND RSPO's own authoritative
@@ -431,25 +458,32 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
     discovered_url = result.get("discovered_website_url")
     website_url_corrected = None
     if discovered_url and discovered_url != school.website_url:
-        website_url_corrected = {"from": school.website_url, "to": discovered_url}
-        school.website_url = discovered_url
-        school.website_url_source = EvidenceSource.ENRICHMENT
+        # PERSISTING a corrected URL is held to a stricter bar than merely
+        # crawling it: once written, every future run starts there, so a
+        # wrong adoption poisons the school permanently. Content-level city
+        # checks are not enough on chain sites (every branch page lists
+        # every city in its nav -- confirmed: TEB re-adopted the /swidnica/
+        # branch URL for a Rzeszów school because "Rzeszów" appears in the
+        # city selector). The URL ITSELF must name the school's city (or
+        # the school's name carries no city to check). A genuinely-better
+        # URL that fails this stays un-persisted -- the next run simply
+        # re-discovers it from the original URL, which costs a little and
+        # risks nothing.
+        if _mentions_school_city(school.name, discovered_url):
+            website_url_corrected = {"from": school.website_url, "to": discovered_url}
+            school.website_url = discovered_url
+            school.website_url_source = EvidenceSource.ENRICHMENT
+        else:
+            website_url_corrected = {"from": school.website_url, "to": discovered_url, "skipped": "url fails city check"}
 
-    director_name = rspo_info.get("director_name") or result.get("director_name")
-
-    # LAST RESORT -- a web search only ever runs once RSPO's own
-    # registry plus the full website crawl above still leave this
-    # school no better than "not_enriched" (see
-    # _would_be_enriched). A school that already has enough to be
-    # "basic"/"partial"/"successful" never triggers a single
-    # search request, even if one specific field (say, the
-    # English teacher) is still missing -- confirmed this is
-    # what was wanted: search is for genuinely stuck schools,
-    # not a way to top up an already-useful entry.
-    if not _would_be_enriched(director_name, result.get("english_teacher_name"), result, rspo_info):
-        augment_with_web_search(school.name, school.city, result, rspo_id=school.rspo_id)
-        director_name = rspo_info.get("director_name") or result.get("director_name")
-
+    # NOTE(accuracy policy): the web-search fallback (augment_with_web_search)
+    # was removed from this pipeline on purpose. Search-result pages are
+    # third-party: they routinely describe a DIFFERENT school (directories,
+    # gmina pages) and were scraped without identity verification -- a
+    # documented source of cross-school contact contamination. Under the
+    # "never write unverified data" policy, third-party pages may not
+    # originate names, emails, or phones. A school whose own site yields
+    # nothing stays blank -- blank beats wrong.
     finalize_scrape_result(result)
 
     phone = result.get("phone") or rspo_info.get("phone")
@@ -480,50 +514,97 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
     # used ONLY as the fallback when the LLM path is unavailable for this
     # school entirely (CLI missing/logged out, or every call failed) --
     # nothing regex found is stored otherwise.
-    still_needed_roles: set[str] = set()
-    if not rspo_info.get("director_name") and not result.get("director_name"):
+    # What the LLM is still needed FOR, judged only by sources that can
+    # actually write under the accuracy policy: RSPO for the director,
+    # nothing else. A regex candidate must not suppress a role here -- it
+    # is never written, so "regex found something" is not "we have it".
+    still_needed_roles: set[str] = {"english_teacher"}
+    if not rspo_info.get("director_name"):
         still_needed_roles.add("director")
-    if not result.get("english_teacher_name"):
-        still_needed_roles.add("english_teacher")
 
     llm_extraction, llm_stats = _run_llm_extraction(result, school, still_needed_roles)
-    llm_extraction = _run_vision_extraction(llm_extraction, school, still_needed_roles, llm_stats)
+    _mark("llm")
 
     llm_pages = result.get("llm_pages") or []
     pages_by_url = {p["url"]: p["text"] for p in llm_pages}
     url_to_tier = {p["url"]: p["tier"] for p in llm_pages}
+
+    # ------------------------------------------------------------------
+    # ACCURACY POLICY (owner requirement): a NAMED contact is written only
+    # when its accuracy is provable -- never guessed, never substituted.
+    #   - director: RSPO's official registry, or an LLM record that
+    #     survived span-grounding (evidence quote contains BOTH the name
+    #     and the role vocabulary, verified in code) with role=="director"
+    #     exactly. A deputy is NEVER written as the director.
+    #   - english_coordinator: a span-grounded role=="english_teacher"
+    #     record only.
+    #   - model-reported confidence "low" means the model itself was
+    #     unsure: not good enough to write, even span-grounded.
+    #   - the regex engine's page-scoped guesses are NEVER written; they
+    #     are kept in the activity metadata for observability only.
+    # A slot with nothing provable stays empty -- blank beats wrong.
+    # ------------------------------------------------------------------
+    def _writeable(record):
+        return record is not None and record.confidence in ("high", "medium")
+
     director_record = teacher_record = None
     if llm_extraction is not None:
-        director_record = _pick_best_staff(llm_extraction.staff, ("director", "deputy_director"), url_to_tier)
+        director_record = _pick_best_staff(llm_extraction.staff, ("director",), url_to_tier)
         teacher_record = _pick_best_staff(llm_extraction.staff, ("english_teacher",), url_to_tier)
+    if not _writeable(director_record):
+        director_record = None
+    if not _writeable(teacher_record):
+        teacher_record = None
 
-    using_llm = llm_extraction is not None
-    scraped_director_name = director_record.name if director_record else (None if using_llm else result.get("director_name"))
-    teacher_name = teacher_record.name if teacher_record else (None if using_llm else result.get("english_teacher_name"))
+    teacher_name = teacher_record.name if teacher_record else None
 
-    director_from_rspo = bool(rspo_info.get("director_name"))
-    director_name = rspo_info.get("director_name") or scraped_director_name
-
-    if director_from_rspo:
-        director_extraction_method, director_confidence, director_evidence = "rspo", None, None
-        director_source_url = f"{RSPO_SOURCE_URL_PREFIX}{school.rspo_id}"
+    # Director: RSPO's registry vs the school's own site. The registry is
+    # official but can be STALE (confirmed real failure, TEB Rzeszów: RSPO
+    # still listed a former/head-office director while the site named the
+    # current one). Resolution:
+    #   - both agree (same person)  -> site record wins the row (it carries
+    #     evidence + possibly the email), registry corroborates;
+    #   - both present, DIFFERENT people -> the site record wins ONLY with
+    #     independent structural proof it's current (its own email matches
+    #     its own name); otherwise the registry name stands alone. Either
+    #     way the conflict is logged -- and fields are NEVER mixed between
+    #     the two people.
+    #   - one present -> that one.
+    rspo_director = rspo_info.get("director_name")
+    rspo_director_conflict = None
+    use_site_director = False
+    if director_record and rspo_director and not _same_person(director_record.name, rspo_director):
+        site_self_consistent = bool(director_record.email) and is_personal_email_for(
+            director_record.email, director_record.name
+        )
+        rspo_director_conflict = {
+            "rspo": rspo_director,
+            "site": director_record.name,
+            "resolved_to": "site" if site_self_consistent else "rspo",
+        }
+        use_site_director = site_self_consistent
     elif director_record:
-        director_extraction_method = "llm_text" if director_record.source_url in pages_by_url else "llm_vision"
+        use_site_director = True
+
+    if use_site_director:
+        director_name = director_record.name
+        director_extraction_method = "llm_text"
         director_confidence, director_evidence = director_record.confidence, director_record.evidence
         director_source_url = director_record.source_url
-    elif scraped_director_name:
-        director_extraction_method, director_confidence, director_evidence = "regex", None, None
-        director_source_url = result.get("source_url")
+    elif rspo_director:
+        director_name = rspo_director
+        director_record = None  # never mix the mismatched site record's fields into this row
+        director_extraction_method, director_confidence, director_evidence = "rspo", None, None
+        director_source_url = f"{RSPO_SOURCE_URL_PREFIX}{school.rspo_id}"
     else:
+        director_name = None
+        director_record = None
         director_extraction_method = director_confidence = director_evidence = director_source_url = None
 
     if teacher_record:
-        teacher_extraction_method = "llm_text" if teacher_record.source_url in pages_by_url else "llm_vision"
+        teacher_extraction_method = "llm_text"
         teacher_confidence, teacher_evidence = teacher_record.confidence, teacher_record.evidence
         teacher_source_url = teacher_record.source_url
-    elif teacher_name:
-        teacher_extraction_method, teacher_confidence, teacher_evidence = "regex", None, None
-        teacher_source_url = result.get("source_url")
     else:
         teacher_extraction_method = teacher_confidence = teacher_evidence = teacher_source_url = None
 
@@ -640,6 +721,19 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
         "teacher_source": teacher_extraction_method,
         "director_confidence": director_confidence,
         "teacher_confidence": teacher_confidence,
+        # Observability only -- the regex engine's page-scoped guesses are
+        # DELIBERATELY never written as contacts (accuracy policy); logging
+        # them lets us measure how often regex and the grounded LLM agree.
+        "regex_director_candidate": result.get("director_name"),
+        "regex_teacher_candidate": result.get("english_teacher_name"),
+        # Registry-vs-site disagreement on who the director is -- always
+        # surfaced, never silently resolved (see the resolution rules above).
+        "rspo_director_conflict": rspo_director_conflict,
+        # Staff rosters published as images/PDFs can't be span-verified, so
+        # they're surfaced for a human instead of auto-extracted. Read from
+        # the crawled page text, not from paid model output.
+        "staff_roster_urls": _roster_media_urls(llm_pages),
+        **timings,
         "specialties_detected": specialties,
         "js_rendered_site": bool(result.get("js_app_shell")),
         "js_render_used": bool(result.get("js_render_used")),
@@ -720,6 +814,13 @@ def run_job(job_id: int) -> None:
                 # as a dead end. The whole job stops here, cleanly, rather
                 # than burning through the rest of the batch one rejected
                 # call at a time.
+                # Roll back this school's HALF-WRITTEN mutations first --
+                # committing partial state (some contacts written, others
+                # not; website corrected but contacts missing) violates the
+                # "only verified, complete data" policy. The rollback also
+                # discards the item's own status fields set above, so they
+                # are re-applied after it.
+                session.rollback()
                 item.status = "cancelled"
                 if exc.resets_at:
                     resets_at_str = datetime.fromtimestamp(exc.resets_at, tz=timezone.utc).strftime(
@@ -734,6 +835,12 @@ def run_job(job_id: int) -> None:
                 cancelled = True
                 break
             except Exception as exc:  # noqa: BLE001 -- one school's failure must not sink the batch
+                # Discard every partial mutation the crashed enrich_school
+                # made (contacts, website corrections, deletions) -- a
+                # failed school must leave the database exactly as it found
+                # it, not half-updated. The status fields below are set
+                # AFTER the rollback so they survive it.
+                session.rollback()
                 item.status = "failed"
                 item.error_message = str(exc)
 

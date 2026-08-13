@@ -10,6 +10,13 @@ services:
     volumes:
       - ./data:/app/data        # SQLite DB + enrichment cache + imports (seed lives here too)
       - ./config:/app/config    # rubric weights, editable live
+      # Claude Code subscription credentials -- REQUIRED for the LLM
+      # extraction path (the only path allowed to write scraped names under
+      # the accuracy policy). Without it the container runs regex-only and
+      # writes no director/teacher names at all (llm_calls: 0). On Windows
+      # ${USERPROFILE} is the home dir; on a Linux VM replace with the path
+      # you copied your .claude directory to (see DEPLOY.md).
+      - ${USERPROFILE:-~}/.claude:/root/.claude
     ports:
       # Reachable at http://localhost:8322 on the machine running it. Bound to
       # loopback so that on a public VM it is NOT exposed directly -- there,

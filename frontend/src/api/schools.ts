@@ -23,6 +23,8 @@ export function filtersToParams(filters: LibraryFilters): Record<string, string>
   params.score_include_unscored = String(filters.score_include_unscored)
   params.include_adult_education = String(filters.include_adult_education)
   params.special_needs = filters.special_needs
+  params.enrichment = filters.enrichment
+  params.pipeline_status = filters.pipeline_status
   return params
 }
 
@@ -48,6 +50,8 @@ export function filtersToApiBody(filters: LibraryFilters): Record<string, unknow
   body.score_include_unscored = filters.score_include_unscored
   body.include_adult_education = filters.include_adult_education
   body.special_needs = filters.special_needs
+  body.enrichment = filters.enrichment
+  body.pipeline_status = filters.pipeline_status
   return body
 }
 

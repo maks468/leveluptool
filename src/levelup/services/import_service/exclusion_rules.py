@@ -25,10 +25,25 @@ elsewhere" in this field).
 
 from __future__ import annotations
 
+import re
+
 from levelup.services.import_service.column_mapping import TARGET_TYPE_MAP, _parse_student_count
 from levelup.services.import_service.column_mapping import is_adult_education as _is_adult_education_row
 
 SPECIAL_NEEDS_SPECYFIKA = "specjalna"
+
+# "Szkoła w Chmurze" -- Poland's dominant ONLINE school network. Its branches
+# are registered in RSPO as ordinary per-city podstawowa/liceum entities (34
+# of them as of the 2026-08 exports, up to 9k+ students each), but teaching
+# is fully remote, so outreach aimed at physical schools has no use for them
+# -- confirmed by the user (2026-08-04) to never belong in this tool. The
+# "w chmurze" phrase is the network's brand and appears in every branch name;
+# no physical Polish school shares it.
+_ONLINE_SCHOOL_RE = re.compile(r"w\s+chmurze", re.IGNORECASE)
+
+
+def is_online_school(row: dict) -> bool:
+    return bool(_ONLINE_SCHOOL_RE.search(row.get("Nazwa placówki") or ""))
 
 
 def is_target_type(row: dict) -> bool:
@@ -46,13 +61,16 @@ def has_zero_or_missing_students(row: dict) -> bool:
 
 def classify(row: dict) -> str:
     """Returns 'import', 'exclude_other_type', 'exclude_adult_education',
-    'exclude_special_needs', or 'exclude_zero_students'."""
+    'exclude_special_needs', 'exclude_online_school', or
+    'exclude_zero_students'."""
     if not is_target_type(row):
         return "exclude_other_type"
     if _is_adult_education_row(row):
         return "exclude_adult_education"
     if is_special_needs_by_rspo_field(row):
         return "exclude_special_needs"
+    if is_online_school(row):
+        return "exclude_online_school"
     if has_zero_or_missing_students(row):
         return "exclude_zero_students"
     return "import"

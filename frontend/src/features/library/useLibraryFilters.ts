@@ -38,7 +38,15 @@ export const useLibraryFilters = create<LibraryFiltersState>((set, get) => ({
   setPreviewedCount: (count) => set({ previewedCount: count }),
   setSort: (sort) => set({ sort }),
   setResultLimit: (resultLimit) => set({ resultLimit }),
+  // Merged over the defaults rather than assigned: a view saved before a
+  // filter existed has no value for it, and the default is the only sensible
+  // reading of "the person who saved this never chose one".
   applyView: (filters, sort, resultLimit) =>
-    set({ filters, sort: sort ?? DEFAULT_SORT, resultLimit, previewedCount: null }),
+    set({
+      filters: { ...DEFAULT_LIBRARY_FILTERS, ...filters },
+      sort: sort ?? DEFAULT_SORT,
+      resultLimit,
+      previewedCount: null,
+    }),
   reset: () => set({ filters: DEFAULT_LIBRARY_FILTERS, sort: DEFAULT_SORT, resultLimit: null, previewedCount: null }),
 }))

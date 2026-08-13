@@ -18,6 +18,26 @@ const SPECIAL_NEEDS_OPTIONS = [
   { value: "exclude", label: "Exclude special-needs schools" },
 ] as const
 
+// The first group asks what enrichment FOUND, in the same words the
+// Enrichment column's badges use, so filtering and reading the results
+// match. The last two ask the separate question of whether it ever RAN.
+const ENRICHMENT_OPTIONS = [
+  { value: "all", label: "Any" },
+  { value: "enriched", label: "Enriched — contacts found" },
+  { value: "not_enriched", label: "Not enriched — nothing found" },
+  { value: "successful", label: "· Successful — personal email" },
+  { value: "partial", label: "· Partial — teacher named" },
+  { value: "basic", label: "· Basic — director + office email" },
+  { value: "attempted", label: "Attempted — ran, any outcome" },
+  { value: "never_attempted", label: "Never attempted" },
+] as const
+
+const PIPELINE_STATUS_OPTIONS = [
+  { value: "all", label: "Any" },
+  { value: "out", label: "Not in the pipeline" },
+  { value: "in", label: "Already in the pipeline" },
+] as const
+
 function Select({
   label,
   value,
@@ -174,6 +194,27 @@ export function QualificationFiltersPanel() {
           />
           Include unscored schools (vocational/policealna/adult-education)
         </label>
+      </div>
+
+      {/* Not qualification criteria -- these two are about how far a school
+          has already been worked, which is what narrows a nationwide list
+          down to "what's actually left to do". */}
+      <div className="space-y-4 border-t border-[var(--color-border)] pt-4">
+        <h2 className="text-sm font-semibold">Progress</h2>
+
+        <Select
+          label="Enrichment"
+          value={filters.enrichment}
+          onChange={(v) => set("enrichment", v as typeof filters.enrichment)}
+          options={ENRICHMENT_OPTIONS}
+        />
+
+        <Select
+          label="Pipeline"
+          value={filters.pipeline_status}
+          onChange={(v) => set("pipeline_status", v as typeof filters.pipeline_status)}
+          options={PIPELINE_STATUS_OPTIONS}
+        />
       </div>
     </div>
   )

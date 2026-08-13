@@ -51,6 +51,14 @@ def run_import(session: Session, rows: Iterable[dict], batch: ImportBatch) -> Im
         if outcome == "exclude_special_needs":
             counts["excluded_special_needs"] += 1
             continue
+        if outcome == "exclude_online_school":
+            # "Szkoła w Chmurze" online-network branches (see
+            # exclusion_rules.is_online_school). Counted under other_type
+            # rather than a new ImportBatch column -- the batch schema
+            # stays untouched, and the exclusion is still visible in code
+            # and in per-run totals.
+            counts["excluded_other_type"] += 1
+            continue
         if outcome == "exclude_zero_students":
             counts["excluded_zero_students"] += 1
             continue
