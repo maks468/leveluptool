@@ -130,3 +130,18 @@ class School(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+# What counts as a school this tool works with, applied by EVERY listing,
+# count, facet, search, summary, and the auto-enrich picker: active in the
+# register, not an adult-education program, not a dedicated special-needs
+# institution. The latter two are eliminated outright (owner's call: never
+# targets for a kids' English program), not filterable -- the rows stay in
+# the database untouched so nothing is destroyed, but no surface shows them.
+# A school that enrichment later tags with a specialty drops out the same
+# way. Lives here (not in the API layer) because services need it too.
+TARGET_SCHOOL_CONDITIONS = (
+    School.is_active.is_(True),
+    School.is_adult_education.is_(False),
+    School.specialty.is_(None),
+)

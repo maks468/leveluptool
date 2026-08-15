@@ -22,7 +22,7 @@ from levelup.core.db import get_session
 from levelup.core.security import get_current_user
 from levelup.models.crm import SavedView, SchoolTag, Tag
 from levelup.models.pipeline import PipelineState
-from levelup.models.school import School
+from levelup.models.school import TARGET_SCHOOL_CONDITIONS, School
 from levelup.models.score import CurrentScore, SchoolScore
 from levelup.models.user import User
 
@@ -194,7 +194,7 @@ def search_schools(q: str, session: Session = Depends(get_session)):
         .outerjoin(PipelineState, PipelineState.school_id == School.id)
         .outerjoin(CurrentScore, CurrentScore.school_id == School.id)
         .outerjoin(SchoolScore, SchoolScore.id == CurrentScore.score_id)
-        .filter(School.is_active.is_(True), or_(School.name.ilike(like), School.city.ilike(like)))
+        .filter(*TARGET_SCHOOL_CONDITIONS, or_(School.name.ilike(like), School.city.ilike(like)))
         .order_by(SchoolScore.total_score.desc().nulls_last())
         .limit(20)
         .all()

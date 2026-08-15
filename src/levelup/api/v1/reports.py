@@ -23,7 +23,7 @@ from levelup.api.v1.schemas import (
 from levelup.core.db import get_session
 from levelup.models.enrichment import EnrichmentJobItem, SchoolContact
 from levelup.models.pipeline import ActivityLog, PipelineStage, PipelineState
-from levelup.models.school import School
+from levelup.models.school import TARGET_SCHOOL_CONDITIONS, School
 from levelup.models.score import CurrentScore, SchoolScore
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -140,19 +140,19 @@ def get_funnel_report(session: Session = Depends(get_session)):
 
 @router.get("/data-quality", response_model=DataQualityReportOut)
 def get_data_quality_report(session: Session = Depends(get_session)):
-    library_total = session.query(School).filter(School.is_active.is_(True)).count()
+    library_total = session.query(School).filter(*TARGET_SCHOOL_CONDITIONS).count()
 
     library_attempted = (
         session.query(func.count(func.distinct(EnrichmentJobItem.school_id)))
         .join(School, School.id == EnrichmentJobItem.school_id)
-        .filter(School.is_active.is_(True))
+        .filter(*TARGET_SCHOOL_CONDITIONS)
         .scalar()
         or 0
     )
     library_verified_contact = (
         session.query(func.count(func.distinct(SchoolContact.school_id)))
         .join(School, School.id == SchoolContact.school_id)
-        .filter(School.is_active.is_(True), SchoolContact.contact_quality == "verified")
+        .filter(*TARGET_SCHOOL_CONDITIONS, SchoolContact.contact_quality == "verified")
         .scalar()
         or 0
     )
@@ -165,7 +165,7 @@ def get_data_quality_report(session: Session = Depends(get_session)):
         session.query(func.count(func.distinct(SchoolContact.school_id)))
         .join(School, School.id == SchoolContact.school_id)
         .filter(
-            School.is_active.is_(True),
+            *TARGET_SCHOOL_CONDITIONS,
             SchoolContact.contact_quality == "partial",
             SchoolContact.school_id.notin_(verified_school_ids),
         )

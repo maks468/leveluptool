@@ -16,7 +16,7 @@ from levelup.core.db import SessionLocal
 from levelup.models.admin import AutoEnrichSettings
 from levelup.models.enrichment import EnrichmentJobItem
 from levelup.models.score import CurrentScore, SchoolScore
-from levelup.models.school import School
+from levelup.models.school import TARGET_SCHOOL_CONDITIONS, School
 from levelup.services.enrichment.jobs import create_job, run_job
 
 logger = logging.getLogger(__name__)
@@ -56,7 +56,10 @@ def _select_candidate_school_ids(session, limit: int) -> list[int]:
         session.query(School.id)
         .outerjoin(CurrentScore, CurrentScore.school_id == School.id)
         .outerjoin(SchoolScore, SchoolScore.id == CurrentScore.score_id)
-        .filter(School.is_active.is_(True))
+        # Same "target school" definition the whole API uses (see
+        # models/school.py) -- never spend a crawl on an adult-education or
+        # special-needs school.
+        .filter(*TARGET_SCHOOL_CONDITIONS)
         .filter(~School.id.in_(attempted))
         .order_by(SchoolScore.total_score.desc().nulls_last())
         .limit(limit)

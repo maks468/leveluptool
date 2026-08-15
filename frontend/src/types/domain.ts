@@ -219,8 +219,9 @@ export interface DashboardSummary {
   library_by_level: Partial<Record<SchoolLevel, number>>
   scored_total: number
   unscored_total: number
-  adult_education_total: number
   pipeline_total: number
+  /** Schools parked in campaign containers (see Campaign). */
+  campaign_schools_total: number
   stage_counts: Partial<Record<PipelineStage, number>>
   high_score_not_contacted: number
 }
@@ -305,9 +306,6 @@ export interface LibraryFilters {
   score_min: number | null
   score_max: number | null
   score_include_unscored: boolean
-  include_adult_education: boolean
-  /** Dedicated special-needs institutions: show all, only them, or exclude them. */
-  special_needs: SpecialNeedsFilter
   /** What enrichment has found for the school -- the same levels the
    * Enrichment column badges show, plus the "any level"/"no level" split,
    * and separately whether enrichment has ever run against it at all
@@ -316,8 +314,6 @@ export interface LibraryFilters {
   /** Whether the school has already been pulled into the pipeline. */
   pipeline_status: PipelineStatusFilter
 }
-
-export type SpecialNeedsFilter = "all" | "only" | "exclude"
 
 export type EnrichmentFilter =
   | "all"
@@ -403,8 +399,6 @@ export const DEFAULT_LIBRARY_FILTERS: LibraryFilters = {
   score_min: null,
   score_max: null,
   score_include_unscored: true,
-  include_adult_education: true,
-  special_needs: "all",
   enrichment: "all",
   pipeline_status: "all",
 }

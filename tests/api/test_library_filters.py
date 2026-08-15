@@ -236,6 +236,26 @@ def test_enrichment_and_pipeline_filters_compose(session):
     }
 
 
+def test_adult_ed_and_special_needs_are_eliminated_outright(session):
+    """Not filterable -- gone. An adult-education program or a dedicated
+    special-needs institution never appears in any listing, under any
+    filter combination, and the old filter parameters are accepted but
+    change nothing (so pre-elimination saved views don't crash or, worse,
+    resurface them)."""
+    school = session.query(School).filter_by(name="director-personal-email").one()
+    school.is_adult_education = True
+    other = session.query(School).filter_by(name="teacher-named-only").one()
+    other.specialty = "Special-needs school"
+    session.commit()
+
+    assert "director-personal-email" not in names_matching(session)
+    assert "teacher-named-only" not in names_matching(session)
+    # The deprecated parameters are ignored -- they cannot bring them back.
+    assert "director-personal-email" not in names_matching(session, include_adult_education=True)
+    assert "teacher-named-only" not in names_matching(session, special_needs="only")
+    assert "teacher-named-only" not in names_matching(session, special_needs="all")
+
+
 def test_inactive_schools_stay_excluded(session):
     """Every Library filter runs on top of is_active -- a school dropped from
     a newer RSPO export must not reappear just because it has contacts."""

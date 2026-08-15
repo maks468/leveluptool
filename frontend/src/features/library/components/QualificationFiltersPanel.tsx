@@ -12,12 +12,6 @@ const SCHOOL_TYPE_OPTIONS = [
   { value: "vocational", label: "Vocational (branżowa I/II + policealna)" },
 ] as const
 
-const SPECIAL_NEEDS_OPTIONS = [
-  { value: "all", label: "Include all schools" },
-  { value: "only", label: "Only special-needs schools" },
-  { value: "exclude", label: "Exclude special-needs schools" },
-] as const
-
 // The first group asks what enrichment FOUND, in the same words the
 // Enrichment column's badges use, so filtering and reading the results
 // match. The last two ask the separate question of whether it ever RAN.
@@ -116,23 +110,7 @@ export function QualificationFiltersPanel() {
         options={SCHOOL_TYPE_OPTIONS}
       />
 
-      <label className="flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
-        <input
-          type="checkbox"
-          checked={filters.include_adult_education}
-          onChange={(e) => set("include_adult_education", e.target.checked)}
-        />
-        Include adult-education programs
-      </label>
-
       <OwnershipFilter />
-
-      <Select
-        label="Special-needs schools"
-        value={filters.special_needs}
-        onChange={(v) => set("special_needs", v as typeof filters.special_needs)}
-        options={SPECIAL_NEEDS_OPTIONS}
-      />
 
       <div>
         <label className="mb-1 block text-xs font-medium text-[var(--color-text-muted)]">Students</label>
@@ -192,7 +170,7 @@ export function QualificationFiltersPanel() {
             checked={filters.score_include_unscored}
             onChange={(e) => set("score_include_unscored", e.target.checked)}
           />
-          Include unscored schools (vocational/policealna/adult-education)
+          Include unscored schools (vocational/policealna)
         </label>
       </div>
 

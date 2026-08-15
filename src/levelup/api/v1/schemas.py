@@ -180,8 +180,8 @@ class DashboardSummaryOut(BaseModel):
     library_by_level: dict[str, int]
     scored_total: int
     unscored_total: int
-    adult_education_total: int
     pipeline_total: int
+    campaign_schools_total: int
     stage_counts: dict[str, int]
     high_score_not_contacted: int
 

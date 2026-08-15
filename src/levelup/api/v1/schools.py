@@ -22,7 +22,7 @@ from levelup.core.security import get_current_user
 from levelup.models.campaign import Campaign, CampaignSchool
 from levelup.models.enrichment import EnrichmentJobItem, SchoolContact
 from levelup.models.pipeline import ActivityLog, ActivityType, PipelineState
-from levelup.models.school import EvidenceSource, School
+from levelup.models.school import TARGET_SCHOOL_CONDITIONS, EvidenceSource, School
 from levelup.models.score import CurrentScore, SchoolScore
 from levelup.models.user import User
 from levelup.services.enrichment.verifier import (
@@ -68,12 +68,16 @@ def _apply_filters(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    include_adult_education: bool = True,
-    special_needs: str = "all",
+    include_adult_education: bool = True,  # deprecated -- accepted and ignored (see below)
+    special_needs: str = "all",  # deprecated -- accepted and ignored (see below)
     enrichment: str = "all",
     pipeline_status: str = "all",
 ):
-    query = query.filter(School.is_active.is_(True))
+    # include_adult_education / special_needs used to be filters; both
+    # populations are now eliminated outright by TARGET_SCHOOL_CONDITIONS.
+    # The parameters stay accepted (and ignored) so saved views and pull
+    # payloads from before the change don't crash on an unexpected key.
+    query = query.filter(*TARGET_SCHOOL_CONDITIONS)
 
     # What contact data enrichment has actually produced for a school --
     # "enriched"/"not_enriched" for the plain split, the three individual
@@ -92,15 +96,6 @@ def _apply_filters(
     elif pipeline_status == "out":
         query = query.filter(not_(exists().where(PipelineState.school_id == School.id)))
 
-    # Dedicated special-needs institutions carry a non-null `specialty`
-    # (set from the official name -- see scraper._detect_specialties).
-    # "only" narrows to them; "exclude" hides them (the default for ordinary
-    # English-program outreach); "all" (default) applies no filter.
-    if special_needs == "only":
-        query = query.filter(School.specialty.isnot(None))
-    elif special_needs == "exclude":
-        query = query.filter(School.specialty.is_(None))
-
     if voivodeship:
         query = query.filter(School.voivodeship == voivodeship)
     if city:
@@ -108,8 +103,6 @@ def _apply_filters(
     if school_type and school_type != "all":
         levels = SCHOOL_TYPE_LEVELS.get(school_type, [])
         query = query.filter(School.level.in_(levels))
-    if not include_adult_education:
-        query = query.filter(School.is_adult_education.is_(False))
 
     # Public and private are independently toggleable -- both on (the
     # default) means no ownership restriction at all, so even a school
@@ -416,8 +409,6 @@ def list_schools(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    include_adult_education: bool = True,
-    special_needs: str = "all",
     enrichment: str = Query("all", description="all|enriched|not_enriched|successful|partial|basic|attempted|never_attempted"),
     pipeline_status: str = Query("all", description="all|in|out -- whether the school is already in the pipeline"),
     sort: str = "score:desc",
@@ -440,8 +431,6 @@ def list_schools(
         score_min=score_min,
         score_max=score_max,
         score_include_unscored=score_include_unscored,
-        include_adult_education=include_adult_education,
-        special_needs=special_needs,
         enrichment=enrichment,
         pipeline_status=pipeline_status,
     )
@@ -492,8 +481,6 @@ def count_schools(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    include_adult_education: bool = True,
-    special_needs: str = "all",
     enrichment: str = Query("all", description="all|enriched|not_enriched|successful|partial|basic|attempted|never_attempted"),
     pipeline_status: str = Query("all", description="all|in|out -- whether the school is already in the pipeline"),
 ):
@@ -512,8 +499,6 @@ def count_schools(
         score_min=score_min,
         score_max=score_max,
         score_include_unscored=score_include_unscored,
-        include_adult_education=include_adult_education,
-        special_needs=special_needs,
         enrichment=enrichment,
         pipeline_status=pipeline_status,
     )
@@ -536,8 +521,6 @@ def list_school_ids(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    include_adult_education: bool = True,
-    special_needs: str = "all",
     enrichment: str = Query("all", description="all|enriched|not_enriched|successful|partial|basic|attempted|never_attempted"),
     pipeline_status: str = Query("all", description="all|in|out -- whether the school is already in the pipeline"),
 ):
@@ -560,8 +543,6 @@ def list_school_ids(
         score_min=score_min,
         score_max=score_max,
         score_include_unscored=score_include_unscored,
-        include_adult_education=include_adult_education,
-        special_needs=special_needs,
         enrichment=enrichment,
         pipeline_status=pipeline_status,
     )
@@ -584,8 +565,6 @@ def export_schools_csv(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    include_adult_education: bool = True,
-    special_needs: str = "all",
     enrichment: str = Query("all", description="all|enriched|not_enriched|successful|partial|basic|attempted|never_attempted"),
     pipeline_status: str = Query("all", description="all|in|out -- whether the school is already in the pipeline"),
     sort: str = "score:desc",
@@ -608,8 +587,6 @@ def export_schools_csv(
         score_min=score_min,
         score_max=score_max,
         score_include_unscored=score_include_unscored,
-        include_adult_education=include_adult_education,
-        special_needs=special_needs,
         enrichment=enrichment,
         pipeline_status=pipeline_status,
     )
@@ -678,7 +655,7 @@ def _scope_to_facet_query(query, scope: str):
 @router.get("/facets/voivodeships", response_model=list[VoivodeshipFacetOut])
 def list_voivodeships(session: Session = Depends(get_session), scope: str = "library"):
     query = session.query(School.voivodeship, func.count(School.id)).filter(
-        School.is_active.is_(True), School.voivodeship.isnot(None)
+        *TARGET_SCHOOL_CONDITIONS, School.voivodeship.isnot(None)
     )
     query = _scope_to_facet_query(query, scope)
     rows = query.group_by(School.voivodeship).order_by(School.voivodeship).all()
@@ -688,7 +665,7 @@ def list_voivodeships(session: Session = Depends(get_session), scope: str = "lib
 @router.get("/facets/cities", response_model=list[CityFacetOut])
 def list_cities(session: Session = Depends(get_session), voivodeship: str | None = None, scope: str = "library"):
     query = session.query(School.city, func.count(School.id)).filter(
-        School.is_active.is_(True), School.city.isnot(None)
+        *TARGET_SCHOOL_CONDITIONS, School.city.isnot(None)
     )
     if voivodeship:
         query = query.filter(School.voivodeship == voivodeship)

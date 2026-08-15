@@ -88,14 +88,6 @@ def _describe_pull_criteria(filters: dict, limit: int | None) -> str:
         parts.append("public only")
     elif private and not public:
         parts.append("private only")
-    if filters.get("include_adult_education") is False:
-        parts.append("excl. adult-ed")
-    special_needs = filters.get("special_needs")
-    if special_needs == "only":
-        parts.append("special-needs only")
-    elif special_needs == "exclude":
-        parts.append("excl. special-needs")
-
     enrichment_labels = {
         "enriched": "enriched",
         "not_enriched": "not enriched",
@@ -172,8 +164,6 @@ def _apply_pipeline_filters(
     students_min: int | None = None,
     students_max: int | None = None,
     students_include_unknown: bool = True,
-    include_adult_education: bool = True,
-    special_needs: str = "all",
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
@@ -220,12 +210,6 @@ def _apply_pipeline_filters(
         if students_include_unknown:
             conditions.append(School.student_count.is_(None))
         query = query.filter(or_(*conditions))
-    if not include_adult_education:
-        query = query.filter(School.is_adult_education.is_(False))
-    if special_needs == "only":
-        query = query.filter(School.specialty.isnot(None))
-    elif special_needs == "exclude":
-        query = query.filter(School.specialty.is_(None))
     if score_min is not None or score_max is not None:
         range_conditions = [SchoolScore.total_score.isnot(None)]
         if score_min is not None:
@@ -256,8 +240,6 @@ def list_pipeline(
     students_min: int | None = None,
     students_max: int | None = None,
     students_include_unknown: bool = True,
-    include_adult_education: bool = True,
-    special_needs: str = Query("all", description="all|only|exclude"),
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
@@ -285,8 +267,6 @@ def list_pipeline(
         students_min=students_min,
         students_max=students_max,
         students_include_unknown=students_include_unknown,
-        include_adult_education=include_adult_education,
-        special_needs=special_needs,
         score_min=score_min,
         score_max=score_max,
         score_include_unscored=score_include_unscored,
@@ -332,8 +312,6 @@ def list_pipeline_ids(
     students_min: int | None = None,
     students_max: int | None = None,
     students_include_unknown: bool = True,
-    include_adult_education: bool = True,
-    special_needs: str = Query("all", description="all|only|exclude"),
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
@@ -361,8 +339,6 @@ def list_pipeline_ids(
         students_min=students_min,
         students_max=students_max,
         students_include_unknown=students_include_unknown,
-        include_adult_education=include_adult_education,
-        special_needs=special_needs,
         score_min=score_min,
         score_max=score_max,
         score_include_unscored=score_include_unscored,
@@ -385,8 +361,6 @@ def export_pipeline_csv(
     students_min: int | None = None,
     students_max: int | None = None,
     students_include_unknown: bool = True,
-    include_adult_education: bool = True,
-    special_needs: str = Query("all", description="all|only|exclude"),
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
@@ -416,8 +390,6 @@ def export_pipeline_csv(
         students_min=students_min,
         students_max=students_max,
         students_include_unknown=students_include_unknown,
-        include_adult_education=include_adult_education,
-        special_needs=special_needs,
         score_min=score_min,
         score_max=score_max,
         score_include_unscored=score_include_unscored,

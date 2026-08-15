@@ -46,9 +46,9 @@ export function DashboardPage() {
           icon={<Flame className="h-4 w-4" />}
         />
         <StatCard
-          label="Adult-education programs"
-          value={summary?.adult_education_total ?? "—"}
-          sublabel="Tagged, not scored"
+          label="In campaigns"
+          value={summary?.campaign_schools_total ?? "—"}
+          sublabel="Parked in outreach batches"
           icon={<GraduationCap className="h-4 w-4" />}
         />
       </div>

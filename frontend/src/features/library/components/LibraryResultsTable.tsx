@@ -193,16 +193,6 @@ export function LibraryResultsTable() {
                       {school.campaign_name}
                     </Badge>
                   )}
-                  {school.is_adult_education && (
-                    <Badge color="amber" className="ml-2">
-                      Adult education
-                    </Badge>
-                  )}
-                  {school.specialty && (
-                    <Badge color="purple" className="ml-2" title={school.specialty}>
-                      {school.specialty}
-                    </Badge>
-                  )}
                 </td>
                 <td className="px-3 py-2">{LEVEL_LABELS[school.level]}</td>
                 <td className="px-3 py-2">
