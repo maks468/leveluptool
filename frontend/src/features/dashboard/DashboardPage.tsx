@@ -8,6 +8,7 @@ import { RecentActivityFeed } from "./components/RecentActivityFeed"
 import { TopLeadsList } from "./components/TopLeadsList"
 import { PipelineMapCard } from "./components/PipelineMapCard"
 import { AutoEnrichSettingsCard } from "./components/AutoEnrichSettingsCard"
+import { ClearPipelineCard } from "./components/ClearPipelineCard"
 import { ResetToolCard } from "./components/ResetToolCard"
 
 export function DashboardPage() {
@@ -62,6 +63,8 @@ export function DashboardPage() {
       </div>
 
       <AutoEnrichSettingsCard />
+
+      <ClearPipelineCard />
 
       <ResetToolCard />
     </div>

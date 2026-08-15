@@ -13,8 +13,23 @@ export interface ResetResult {
   schools_uncontacted_reset: number
 }
 
+/** Reports what survived as well as what went -- the point of this action
+ * is what it leaves alone. */
+export interface ClearPipelineResult {
+  pipeline_schools_removed: number
+  activity_log_removed: number
+  school_contacts_kept: number
+  activity_log_kept: number
+}
+
 export async function resetPipelineWorkflow(confirmation: string): Promise<ResetResult> {
   return api.post<ResetResult>("/admin/reset-pipeline", { confirmation })
+}
+
+/** Empties the pipeline and its outreach history while keeping every
+ * enriched contact -- the narrow alternative to resetPipelineWorkflow. */
+export async function clearPipelineOnly(confirmation: string): Promise<ClearPipelineResult> {
+  return api.post<ClearPipelineResult>("/admin/clear-pipeline", { confirmation })
 }
 
 export async function getAutoEnrichSettings(): Promise<AutoEnrichSettings> {

@@ -299,6 +299,16 @@ class ResetResultOut(BaseModel):
     schools_uncontacted_reset: int
 
 
+class ClearPipelineResultOut(BaseModel):
+    """Reports what survived as well as what went, since the whole point of
+    this action is what it DOESN'T touch."""
+
+    pipeline_schools_removed: int
+    activity_log_removed: int
+    school_contacts_kept: int
+    activity_log_kept: int
+
+
 class QueueEntryOut(PipelineSchoolOut):
     last_activity_at: datetime | None
     queue_reason: str

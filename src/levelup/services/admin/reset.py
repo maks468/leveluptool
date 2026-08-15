@@ -20,8 +20,27 @@ from sqlalchemy.orm import Session
 
 from levelup.models.crm import SavedView, SchoolTag, Tag
 from levelup.models.enrichment import EnrichmentJob, EnrichmentJobItem, SchoolContact
-from levelup.models.pipeline import ActivityLog, PipelineState
+from levelup.models.pipeline import ActivityLog, ActivityType, PipelineState
 from levelup.models.school import School
+
+# Activity that records OUTREACH -- what you did about a school. Cleared
+# alongside the pipeline itself, because a stage change or a call note is
+# only meaningful as part of the pursuit being cleared.
+OUTREACH_ACTIVITY_TYPES = (
+    ActivityType.PULLED_INTO_PIPELINE.value,
+    ActivityType.STAGE_CHANGED.value,
+    ActivityType.NOTE.value,
+    ActivityType.EMAIL_SENT.value,
+    ActivityType.EMAIL_OPENED.value,
+    ActivityType.REMINDER_SCHEDULED.value,
+)
+
+# Everything else on the activity log describes the SCHOOL RECORD rather
+# than the outreach -- what enrichment found, an ownership subtype that got
+# confirmed, a website URL someone corrected. That survives a pipeline
+# clear: it's the audit trail behind data still sitting in the Library.
+# (ActivityType.ENRICHMENT_COMPLETED, OWNERSHIP_SUBTYPE_CONFIRMED,
+# WEBSITE_URL_CORRECTED.)
 
 
 def reset_pipeline_workflow(session: Session) -> dict[str, int]:
@@ -40,5 +59,36 @@ def reset_pipeline_workflow(session: Session) -> dict[str, int]:
         .filter(School.director_name.isnot(None) | School.english_teacher_name.isnot(None))
         .update({School.director_name: None, School.english_teacher_name: None}, synchronize_session=False)
     )
+    session.commit()
+    return counts
+
+
+def clear_pipeline(session: Session) -> dict[str, int]:
+    """Empties the pipeline without touching a single piece of enrichment.
+
+    The narrower counterpart to reset_pipeline_workflow above: that one
+    starts the whole tool over, including throwing away every contact
+    enrichment ever found. Those contacts cost real crawling and LLM calls
+    to produce and have nothing to do with which schools you're currently
+    pursuing, so "I want to rebuild my pipeline" shouldn't require
+    sacrificing them.
+
+    Removes pipeline membership (and with it, stages and follow-ups, which
+    are columns on that same row) plus the outreach half of the activity
+    log. Deliberately leaves alone: SchoolContact, enrichment jobs and
+    their items, the director/English-teacher names on School, tags, saved
+    views, scores, rankings and the Library itself. After this, every
+    school reads as never-pursued while its enrichment level, contacts and
+    enrichment history stay exactly as they were -- so re-pulling a fresh
+    pipeline costs nothing but the pull.
+    """
+    counts = {
+        "activity_log_removed": session.query(ActivityLog)
+        .filter(ActivityLog.activity_type.in_(OUTREACH_ACTIVITY_TYPES))
+        .delete(synchronize_session=False),
+        "pipeline_schools_removed": session.query(PipelineState).delete(synchronize_session=False),
+    }
+    counts["school_contacts_kept"] = session.query(SchoolContact).count()
+    counts["activity_log_kept"] = session.query(ActivityLog).count()
     session.commit()
     return counts

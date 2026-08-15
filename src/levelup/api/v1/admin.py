@@ -10,12 +10,13 @@ from sqlalchemy.orm import Session
 from levelup.api.v1.schemas import (
     AutoEnrichSettingsOut,
     AutoEnrichSettingsUpdate,
+    ClearPipelineResultOut,
     ResetConfirmRequest,
     ResetResultOut,
 )
 from levelup.core.db import get_session
 from levelup.models.admin import AutoEnrichSettings
-from levelup.services.admin.reset import reset_pipeline_workflow
+from levelup.services.admin.reset import clear_pipeline, reset_pipeline_workflow
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -28,6 +29,17 @@ def reset_pipeline(body: ResetConfirmRequest, session: Session = Depends(get_ses
         raise HTTPException(400, f'Type "{REQUIRED_CONFIRMATION}" exactly to confirm this action.')
     counts = reset_pipeline_workflow(session)
     return ResetResultOut(**counts)
+
+
+@router.post("/clear-pipeline", response_model=ClearPipelineResultOut)
+def clear_pipeline_only(body: ResetConfirmRequest, session: Session = Depends(get_session)):
+    """Empties the pipeline and its outreach history, keeping every
+    enriched contact. Same typed confirmation as the full reset -- it's
+    still irreversible, just far narrower."""
+    if body.confirmation.strip().lower() != REQUIRED_CONFIRMATION:
+        raise HTTPException(400, f'Type "{REQUIRED_CONFIRMATION}" exactly to confirm this action.')
+    counts = clear_pipeline(session)
+    return ClearPipelineResultOut(**counts)
 
 
 def _get_or_create_settings(session: Session) -> AutoEnrichSettings:
