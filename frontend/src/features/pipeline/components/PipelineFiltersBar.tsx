@@ -7,10 +7,25 @@ import { PIPELINE_STAGES, STAGE_LABELS, type EnrichmentLevel, type PipelineStage
 
 const ENRICHMENT_LEVELS: EnrichmentLevel[] = ["not_enriched", "basic", "partial", "successful"]
 
+// Mirrors the Library's school-type options -- the question doesn't change
+// once a school is in the pipeline, only the population it's asked of.
+const SCHOOL_TYPE_OPTIONS = [
+  { value: "all", label: "All types" },
+  { value: "primary", label: "Primary" },
+  { value: "secondary", label: "Secondary (liceum + technikum)" },
+  { value: "liceum", label: "Liceum only" },
+  { value: "technikum", label: "Technikum only" },
+  { value: "vocational", label: "Vocational" },
+] as const
+
 export interface PipelineFilterState {
   voivodeship: string | null
   city: string | null
   tagId: number | null
+  schoolType: string
+  ownership: "all" | "public" | "private"
+  studentsMin: number | null
+  studentsMax: number | null
   scoreMin: number | null
   scoreMax: number | null
   scoreIncludeUnscored: boolean
@@ -123,6 +138,57 @@ export function PipelineFiltersBar({
       </div>
 
       <div>
+        <label className="mb-1 block text-xs font-medium text-[var(--color-text-muted)]">School type</label>
+        <select
+          className="w-40 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
+          value={filters.schoolType}
+          onChange={(e) => onChange({ schoolType: e.target.value })}
+        >
+          {SCHOOL_TYPE_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div>
+        <label className="mb-1 block text-xs font-medium text-[var(--color-text-muted)]">Ownership</label>
+        <select
+          className="w-28 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
+          value={filters.ownership}
+          onChange={(e) => onChange({ ownership: e.target.value as PipelineFilterState["ownership"] })}
+        >
+          <option value="all">Any</option>
+          <option value="public">Public</option>
+          <option value="private">Private</option>
+        </select>
+      </div>
+
+      <div>
+        <label className="mb-1 block text-xs font-medium text-[var(--color-text-muted)]">Students</label>
+        <div className="flex items-center gap-1.5">
+          <input
+            type="number"
+            placeholder="Min"
+            min={0}
+            className="w-20 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
+            value={filters.studentsMin ?? ""}
+            onChange={(e) => onChange({ studentsMin: e.target.value === "" ? null : Number(e.target.value) })}
+          />
+          <span className="text-[var(--color-text-muted)]">&ndash;</span>
+          <input
+            type="number"
+            placeholder="Max"
+            min={0}
+            className="w-20 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
+            value={filters.studentsMax ?? ""}
+            onChange={(e) => onChange({ studentsMax: e.target.value === "" ? null : Number(e.target.value) })}
+          />
+        </div>
+      </div>
+
+      <div>
         <label className="mb-1 block text-xs font-medium text-[var(--color-text-muted)]">Score (0&ndash;100)</label>
         <div className="flex items-center gap-1.5">
           <input
@@ -176,6 +242,10 @@ export function PipelineFiltersBar({
         filters.voivodeship ||
         filters.city ||
         filters.tagId !== null ||
+        filters.schoolType !== "all" ||
+        filters.ownership !== "all" ||
+        filters.studentsMin !== null ||
+        filters.studentsMax !== null ||
         filters.scoreMin !== null ||
         filters.scoreMax !== null ||
         filters.enrichmentLevel !== null) && (
@@ -188,6 +258,10 @@ export function PipelineFiltersBar({
               voivodeship: null,
               city: null,
               tagId: null,
+              schoolType: "all",
+              ownership: "all",
+              studentsMin: null,
+              studentsMax: null,
               scoreMin: null,
               scoreMax: null,
               enrichmentLevel: null,

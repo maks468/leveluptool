@@ -60,6 +60,10 @@ class SchoolOut(BaseModel):
     enrichment_level: str
     is_active: bool
     in_pipeline: bool
+    # The campaign container this school is parked in, if any -- surfaced
+    # everywhere schools are listed so "where does this school live" (Library
+    # only / pipeline / one campaign) is always answerable at a glance.
+    campaign_name: str | None = None
     stage: str | None
     next_action_note: str | None
     next_action_date: datetime | None
@@ -117,6 +121,9 @@ class PullIntoPipelineRequest(BaseModel):
 class PullIntoPipelineResult(BaseModel):
     pulled_new: int
     already_in_pipeline: int
+    # Skipped because they're parked in a campaign container -- getting one
+    # back is the campaign page's explicit return action, never a re-pull.
+    already_in_campaign: int = 0
 
 
 class PipelineSchoolOut(SchoolOut):
@@ -296,7 +303,64 @@ class ResetResultOut(BaseModel):
     activity_log_removed: int
     saved_views_removed: int
     pipeline_schools_removed: int
+    campaign_schools_removed: int
+    campaigns_removed: int
     schools_uncontacted_reset: int
+
+
+class CampaignCreate(BaseModel):
+    name: str
+
+
+class CampaignOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    created_at: datetime
+    school_count: int
+
+    @field_serializer("created_at")
+    def _ser_created_at(self, v: datetime) -> str:
+        return _stamp_utc(v)
+
+
+class CampaignSchoolOut(BaseModel):
+    """A school as seen inside its campaign container: the Library summary
+    plus the two facts the container itself owns -- when it was parked and
+    what stage it held at that moment."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    level: str
+    voivodeship: str | None
+    city: str | None
+    is_private: bool | None
+    student_count: int | None
+    name_disambiguator: str | None
+    score: int | None
+    stage_at_move: str
+    added_at: datetime
+
+    @field_serializer("added_at")
+    def _ser_added_at(self, v: datetime) -> str:
+        return _stamp_utc(v)
+
+
+class CampaignDetailOut(CampaignOut):
+    schools: list[CampaignSchoolOut]
+
+
+class MoveToCampaignRequest(BaseModel):
+    school_ids: list[int]
+
+
+class MoveToCampaignResult(BaseModel):
+    moved: int
+    not_in_pipeline: int
+    already_in_campaign: int
 
 
 class ClearPipelineResultOut(BaseModel):

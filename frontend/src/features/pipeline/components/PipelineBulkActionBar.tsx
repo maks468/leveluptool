@@ -1,8 +1,9 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { CheckSquare, Sparkles, Tag as TagIcon, X } from "lucide-react"
+import { Archive, CheckSquare, Sparkles, Tag as TagIcon, X } from "lucide-react"
 import { bulkSetStage } from "@/api/pipeline"
 import { bulkAddTag, createTag, listTags } from "@/api/crm"
+import { createCampaign, listCampaigns, moveSchoolsToCampaign } from "@/api/campaigns"
 import { startEnrichmentJob } from "@/api/enrichment"
 import { queryKeys } from "@/api/queryKeys"
 import { PIPELINE_STAGES, STAGE_LABELS, type PipelineStage } from "@/types/domain"
@@ -32,10 +33,14 @@ export function PipelineBulkActionBar({
   const [tagChoice, setTagChoice] = useState<string>("")
   const [newTagName, setNewTagName] = useState("")
   const [addingTag, setAddingTag] = useState(false)
+  const [campaignChoice, setCampaignChoice] = useState<string>("")
+  const [newCampaignName, setNewCampaignName] = useState("")
+  const [addingCampaign, setAddingCampaign] = useState(false)
   const [result, setResult] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
   const { data: tags = [] } = useQuery({ queryKey: queryKeys.tags(), queryFn: listTags })
+  const { data: campaigns = [] } = useQuery({ queryKey: queryKeys.campaigns(), queryFn: listCampaigns })
 
   const stageMutation = useMutation({
     mutationFn: () => bulkSetStage(Array.from(selectedIds), stageChoice),
@@ -63,6 +68,36 @@ export function PipelineBulkActionBar({
       setNewTagName("")
       setAddingTag(false)
       tagMutation.mutate({ id: tag.id, name: tag.name })
+    },
+  })
+
+  // Move semantics: the schools LEAVE the pipeline into the campaign
+  // container in one transaction -- which is the point (a campaigned school
+  // can't be double-contacted from the pipeline).
+  const campaignMutation = useMutation({
+    mutationFn: (campaign: { id: number; name: string }) =>
+      moveSchoolsToCampaign(campaign.id, Array.from(selectedIds)),
+    onSuccess: (res, campaign) => {
+      const skipped = res.not_in_pipeline + res.already_in_campaign
+      setResult(
+        `Moved ${res.moved} school${res.moved === 1 ? "" : "s"} to campaign "${campaign.name}"` +
+          (skipped > 0 ? ` (${skipped} skipped)` : "")
+      )
+      clear()
+      setCampaignChoice("")
+      queryClient.invalidateQueries({ queryKey: queryKeys.campaigns() })
+      queryClient.invalidateQueries({ queryKey: ["campaign"] })
+      queryClient.invalidateQueries({ queryKey: ["schools"] })
+      invalidateAfterBulkChange(queryClient)
+    },
+  })
+
+  const createAndMoveMutation = useMutation({
+    mutationFn: (name: string) => createCampaign(name),
+    onSuccess: (campaign) => {
+      setNewCampaignName("")
+      setAddingCampaign(false)
+      campaignMutation.mutate({ id: campaign.id, name: campaign.name })
     },
   })
 
@@ -182,6 +217,69 @@ export function PipelineBulkActionBar({
             Create &amp; tag
           </Button>
           <button type="button" className="text-xs text-[var(--color-text-muted)] hover:underline" onClick={() => setAddingTag(false)}>
+            Cancel
+          </button>
+        </div>
+      )}
+
+      <span className="h-6 w-px bg-[var(--color-border)]" />
+
+      {!addingCampaign ? (
+        <div className="flex items-center gap-2">
+          <select
+            className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-sm"
+            value={campaignChoice}
+            onChange={(e) => setCampaignChoice(e.target.value)}
+          >
+            <option value="">Choose campaign&hellip;</option>
+            {campaigns.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name} ({c.school_count})
+              </option>
+            ))}
+          </select>
+          <Button
+            size="sm"
+            disabled={campaignChoice === "" || campaignMutation.isPending}
+            title="Moves the selected schools OUT of the pipeline and into this campaign"
+            onClick={() => {
+              const campaign = campaigns.find((c) => c.id === Number(campaignChoice))
+              if (campaign) campaignMutation.mutate(campaign)
+            }}
+          >
+            <Archive className="h-3.5 w-3.5" />
+            Move to campaign
+          </Button>
+          <button
+            type="button"
+            className="text-xs text-[var(--color-accent)] hover:underline"
+            onClick={() => setAddingCampaign(true)}
+          >
+            + New campaign
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            autoFocus
+            placeholder="New campaign name"
+            className="w-40 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-sm"
+            value={newCampaignName}
+            onChange={(e) => setNewCampaignName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && newCampaignName.trim()) createAndMoveMutation.mutate(newCampaignName.trim())
+              if (e.key === "Escape") setAddingCampaign(false)
+            }}
+          />
+          <Button
+            size="sm"
+            disabled={!newCampaignName.trim() || createAndMoveMutation.isPending || campaignMutation.isPending}
+            onClick={() => createAndMoveMutation.mutate(newCampaignName.trim())}
+          >
+            Create &amp; move
+          </Button>
+          <button type="button" className="text-xs text-[var(--color-text-muted)] hover:underline" onClick={() => setAddingCampaign(false)}>
             Cancel
           </button>
         </div>

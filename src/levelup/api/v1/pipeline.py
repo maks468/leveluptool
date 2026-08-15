@@ -23,7 +23,13 @@ from levelup.api.v1.schemas import (
     SetFollowUpRequest,
     StageChangeRequest,
 )
-from levelup.api.v1.schools import _apply_filters, _compute_best_emails, _compute_enrichment_levels, _to_out
+from levelup.api.v1.schools import (
+    SCHOOL_TYPE_LEVELS,
+    _apply_filters,
+    _compute_best_emails,
+    _compute_enrichment_levels,
+    _to_out,
+)
 from levelup.core.db import get_session
 from levelup.core.security import get_current_user
 from levelup.models.crm import SchoolTag
@@ -161,6 +167,13 @@ def _apply_pipeline_filters(
     voivodeship: str | None = None,
     city: str | None = None,
     tag_id: int | None = None,
+    school_type: str | None = None,
+    ownership: str = "all",
+    students_min: int | None = None,
+    students_max: int | None = None,
+    students_include_unknown: bool = True,
+    include_adult_education: bool = True,
+    special_needs: str = "all",
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
@@ -170,7 +183,16 @@ def _apply_pipeline_filters(
     _apply_filters): assumes the query is already joined to PipelineState.
     Shared by the paginated list and the /pipeline/ids resolver so
     "enrich/act on everything in this view" matches exactly what the table
-    shows, across all pages."""
+    shows, across all pages.
+
+    school_type/ownership/students mirror the Library's qualification
+    filters (same SCHOOL_TYPE_LEVELS mapping, same include-unknown default)
+    -- the questions don't change once a school is in the pipeline, only
+    the population they're asked of. Ownership is a single all|public|
+    private choice rather than the Library's two independent toggles: the
+    pipeline is a curated set, so the "both off = show nothing" edge the
+    Library models isn't worth a second control here. A school with
+    UNKNOWN ownership (is_private IS NULL) matches neither narrowing."""
     if stage:
         query = query.filter(PipelineState.stage == stage)
     if q:
@@ -182,6 +204,28 @@ def _apply_pipeline_filters(
         query = query.filter(School.city == city)
     if tag_id is not None:
         query = query.join(SchoolTag, SchoolTag.school_id == School.id).filter(SchoolTag.tag_id == tag_id)
+    if school_type and school_type != "all":
+        query = query.filter(School.level.in_(SCHOOL_TYPE_LEVELS.get(school_type, [])))
+    if ownership == "public":
+        query = query.filter(School.is_private.is_(False))
+    elif ownership == "private":
+        query = query.filter(School.is_private.is_(True))
+    if students_min is not None or students_max is not None:
+        range_conditions = [School.student_count.isnot(None)]
+        if students_min is not None:
+            range_conditions.append(School.student_count >= students_min)
+        if students_max is not None:
+            range_conditions.append(School.student_count <= students_max)
+        conditions = [and_(*range_conditions)]
+        if students_include_unknown:
+            conditions.append(School.student_count.is_(None))
+        query = query.filter(or_(*conditions))
+    if not include_adult_education:
+        query = query.filter(School.is_adult_education.is_(False))
+    if special_needs == "only":
+        query = query.filter(School.specialty.isnot(None))
+    elif special_needs == "exclude":
+        query = query.filter(School.specialty.is_(None))
     if score_min is not None or score_max is not None:
         range_conditions = [SchoolScore.total_score.isnot(None)]
         if score_min is not None:
@@ -207,6 +251,13 @@ def list_pipeline(
     voivodeship: str | None = None,
     city: str | None = None,
     tag_id: int | None = None,
+    school_type: str | None = None,
+    ownership: str = Query("all", description="all|public|private"),
+    students_min: int | None = None,
+    students_max: int | None = None,
+    students_include_unknown: bool = True,
+    include_adult_education: bool = True,
+    special_needs: str = Query("all", description="all|only|exclude"),
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
@@ -229,6 +280,13 @@ def list_pipeline(
         voivodeship=voivodeship,
         city=city,
         tag_id=tag_id,
+        school_type=school_type,
+        ownership=ownership,
+        students_min=students_min,
+        students_max=students_max,
+        students_include_unknown=students_include_unknown,
+        include_adult_education=include_adult_education,
+        special_needs=special_needs,
         score_min=score_min,
         score_max=score_max,
         score_include_unscored=score_include_unscored,
@@ -269,6 +327,13 @@ def list_pipeline_ids(
     voivodeship: str | None = None,
     city: str | None = None,
     tag_id: int | None = None,
+    school_type: str | None = None,
+    ownership: str = Query("all", description="all|public|private"),
+    students_min: int | None = None,
+    students_max: int | None = None,
+    students_include_unknown: bool = True,
+    include_adult_education: bool = True,
+    special_needs: str = Query("all", description="all|only|exclude"),
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
@@ -291,6 +356,13 @@ def list_pipeline_ids(
         voivodeship=voivodeship,
         city=city,
         tag_id=tag_id,
+        school_type=school_type,
+        ownership=ownership,
+        students_min=students_min,
+        students_max=students_max,
+        students_include_unknown=students_include_unknown,
+        include_adult_education=include_adult_education,
+        special_needs=special_needs,
         score_min=score_min,
         score_max=score_max,
         score_include_unscored=score_include_unscored,
@@ -308,6 +380,13 @@ def export_pipeline_csv(
     voivodeship: str | None = None,
     city: str | None = None,
     tag_id: int | None = None,
+    school_type: str | None = None,
+    ownership: str = Query("all", description="all|public|private"),
+    students_min: int | None = None,
+    students_max: int | None = None,
+    students_include_unknown: bool = True,
+    include_adult_education: bool = True,
+    special_needs: str = Query("all", description="all|only|exclude"),
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
@@ -332,6 +411,13 @@ def export_pipeline_csv(
         voivodeship=voivodeship,
         city=city,
         tag_id=tag_id,
+        school_type=school_type,
+        ownership=ownership,
+        students_min=students_min,
+        students_max=students_max,
+        students_include_unknown=students_include_unknown,
+        include_adult_education=include_adult_education,
+        special_needs=special_needs,
         score_min=score_min,
         score_max=score_max,
         score_include_unscored=score_include_unscored,

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from levelup.models.campaign import Campaign, CampaignSchool
 from levelup.models.crm import SavedView, SchoolTag, Tag
 from levelup.models.enrichment import EnrichmentJob, EnrichmentJobItem, SchoolContact
 from levelup.models.pipeline import ActivityLog, ActivityType, PipelineState
@@ -53,6 +54,12 @@ def reset_pipeline_workflow(session: Session) -> dict[str, int]:
         "activity_log_removed": session.query(ActivityLog).delete(synchronize_session=False),
         "saved_views_removed": session.query(SavedView).delete(synchronize_session=False),
         "pipeline_schools_removed": session.query(PipelineState).delete(synchronize_session=False),
+        # Campaigns are parked outreach batches -- workflow state, so the
+        # full reset clears them. (clear_pipeline below deliberately does
+        # NOT: parked batches are the record that those schools were already
+        # contacted, which must outlive a pipeline rebuild.)
+        "campaign_schools_removed": session.query(CampaignSchool).delete(synchronize_session=False),
+        "campaigns_removed": session.query(Campaign).delete(synchronize_session=False),
     }
     counts["schools_uncontacted_reset"] = (
         session.query(School)

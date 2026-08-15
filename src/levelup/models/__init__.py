@@ -1,4 +1,5 @@
 from levelup.models.admin import AutoEnrichSettings
+from levelup.models.campaign import Campaign, CampaignSchool
 from levelup.models.crm import SavedView, SchoolTag, Tag
 from levelup.models.enrichment import EnrichmentJob, EnrichmentJobItem, SchoolContact
 from levelup.models.import_batch import ImportBatch
@@ -25,5 +26,7 @@ __all__ = [
     "SavedView",
     "Tag",
     "SchoolTag",
+    "Campaign",
+    "CampaignSchool",
     "AutoEnrichSettings",
 ]

@@ -19,6 +19,10 @@ export interface PipelineQueryArgs {
   voivodeship?: string | null
   city?: string | null
   tagId?: number | null
+  schoolType?: string | null
+  ownership?: "all" | "public" | "private"
+  studentsMin?: number | null
+  studentsMax?: number | null
   scoreMin?: number | null
   scoreMax?: number | null
   scoreIncludeUnscored?: boolean
@@ -27,13 +31,31 @@ export interface PipelineQueryArgs {
 }
 
 function pipelineQueryParams(args: PipelineQueryArgs): URLSearchParams {
-  const { stage, q, voivodeship, city, tagId, scoreMin, scoreMax, scoreIncludeUnscored = true, enrichmentLevel } = args
+  const {
+    stage,
+    q,
+    voivodeship,
+    city,
+    tagId,
+    schoolType,
+    ownership,
+    studentsMin,
+    studentsMax,
+    scoreMin,
+    scoreMax,
+    scoreIncludeUnscored = true,
+    enrichmentLevel,
+  } = args
   const params = new URLSearchParams()
   if (stage) params.set("stage", stage)
   if (q) params.set("q", q)
   if (voivodeship) params.set("voivodeship", voivodeship)
   if (city) params.set("city", city)
   if (tagId !== null && tagId !== undefined) params.set("tag_id", String(tagId))
+  if (schoolType && schoolType !== "all") params.set("school_type", schoolType)
+  if (ownership && ownership !== "all") params.set("ownership", ownership)
+  if (studentsMin !== null && studentsMin !== undefined) params.set("students_min", String(studentsMin))
+  if (studentsMax !== null && studentsMax !== undefined) params.set("students_max", String(studentsMax))
   if (scoreMin !== null && scoreMin !== undefined) params.set("score_min", String(scoreMin))
   if (scoreMax !== null && scoreMax !== undefined) params.set("score_max", String(scoreMax))
   params.set("score_include_unscored", String(scoreIncludeUnscored))
@@ -70,7 +92,7 @@ export function exportPipelineCsvUrl(args: PipelineQueryArgs = {}): string {
 
 export async function pullIntoPipeline(
   args: { schoolIds?: number[]; filters?: LibraryFilters; limit?: number | null }
-): Promise<{ pulled_new: number; already_in_pipeline: number }> {
+): Promise<{ pulled_new: number; already_in_pipeline: number; already_in_campaign: number }> {
   const body = args.schoolIds
     ? { school_ids: args.schoolIds }
     : { filters: args.filters ? filtersToApiBody(args.filters) : {}, limit: args.limit ?? null }

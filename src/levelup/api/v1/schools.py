@@ -19,6 +19,7 @@ from levelup.api.v1.schemas import (
 )
 from levelup.core.db import get_session
 from levelup.core.security import get_current_user
+from levelup.models.campaign import Campaign, CampaignSchool
 from levelup.models.enrichment import EnrichmentJobItem, SchoolContact
 from levelup.models.pipeline import ActivityLog, ActivityType, PipelineState
 from levelup.models.school import EvidenceSource, School
@@ -348,6 +349,12 @@ def _to_out(
     session: Session, school: School, score: SchoolScore | None, enrichment_level: str | None = None
 ) -> SchoolOut:
     pipeline_state = session.query(PipelineState).filter_by(school_id=school.id).one_or_none()
+    campaign_name = (
+        session.query(Campaign.name)
+        .join(CampaignSchool, CampaignSchool.campaign_id == Campaign.id)
+        .filter(CampaignSchool.school_id == school.id)
+        .scalar()
+    )
     if enrichment_level is None:
         enrichment_level = _compute_enrichment_levels(session, [school.id]).get(school.id, "not_enriched")
     return SchoolOut(
@@ -376,6 +383,7 @@ def _to_out(
             "enrichment_level": enrichment_level,
             "is_active": school.is_active,
             "in_pipeline": pipeline_state is not None,
+            "campaign_name": campaign_name,
             "stage": pipeline_state.stage.value if pipeline_state else None,
             "next_action_note": pipeline_state.next_action_note if pipeline_state else None,
             "next_action_date": pipeline_state.next_action_date if pipeline_state else None,

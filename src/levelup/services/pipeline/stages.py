@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
+from levelup.models.campaign import CampaignSchool
 from levelup.models.pipeline import ActivityType, PipelineStage, PipelineState
 from levelup.models.school import School
 from levelup.services.automation.hooks import on_stage_changed
@@ -21,7 +22,17 @@ def pull_into_pipeline(
         row.school_id
         for row in session.query(PipelineState).filter(PipelineState.school_id.in_(school_ids)).all()
     }
-    new_ids = [sid for sid in school_ids if sid not in already]
+    # Campaign members are skipped, not re-pulled -- a school in a campaign
+    # was deliberately parked there, and silently pulling it back is exactly
+    # the double-contact path campaigns exist to close. Getting one back is
+    # the campaign page's explicit return-to-pipeline action.
+    in_campaign = {
+        row.school_id
+        for row in session.query(CampaignSchool.school_id)
+        .filter(CampaignSchool.school_id.in_(school_ids))
+        .all()
+    }
+    new_ids = [sid for sid in school_ids if sid not in already and sid not in in_campaign]
 
     for school_id in new_ids:
         session.add(
@@ -40,7 +51,11 @@ def pull_into_pipeline(
             metadata={"pull_criteria": pull_criteria} if pull_criteria else {},
         )
     session.commit()
-    return {"pulled_new": len(new_ids), "already_in_pipeline": len(already)}
+    return {
+        "pulled_new": len(new_ids),
+        "already_in_pipeline": len(already),
+        "already_in_campaign": len(in_campaign),
+    }
 
 
 def change_stage(session: Session, school_id: int, new_stage: PipelineStage, actor_id: int) -> PipelineState:

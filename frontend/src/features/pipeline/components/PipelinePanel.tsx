@@ -178,6 +178,10 @@ const DEFAULT_FILTERS: PipelineFilterState = {
   voivodeship: null,
   city: null,
   tagId: null,
+  schoolType: "all",
+  ownership: "all",
+  studentsMin: null,
+  studentsMax: null,
   scoreMin: null,
   scoreMax: null,
   scoreIncludeUnscored: true,
@@ -277,6 +281,10 @@ export function PipelinePanel({
     voivodeship: filters.voivodeship,
     city: filters.city,
     tagId: filters.tagId,
+    schoolType: filters.schoolType,
+    ownership: filters.ownership,
+    studentsMin: filters.studentsMin,
+    studentsMax: filters.studentsMax,
     scoreMin: filters.scoreMin,
     scoreMax: filters.scoreMax,
     scoreIncludeUnscored: filters.scoreIncludeUnscored,
@@ -359,15 +367,11 @@ export function PipelinePanel({
 
   function handleApplySavedView(snapshot: PipelineFiltersSnapshot, savedSort: string | null) {
     setStageFilter(snapshot.stage)
-    setFilters({
-      voivodeship: snapshot.voivodeship,
-      city: snapshot.city,
-      tagId: snapshot.tagId,
-      scoreMin: snapshot.scoreMin,
-      scoreMax: snapshot.scoreMax,
-      scoreIncludeUnscored: snapshot.scoreIncludeUnscored,
-      enrichmentLevel: snapshot.enrichmentLevel,
-    })
+    // Merged over the defaults: a view saved before a filter existed has no
+    // value for it, and the default is the only sensible reading of "the
+    // person who saved this never chose one".
+    const { stage: _stage, ...savedFilters } = snapshot
+    setFilters({ ...DEFAULT_FILTERS, ...savedFilters })
     if (savedSort) {
       const [field, direction] = savedSort.split(":")
       setSortField((field as SortField) || "stage_updated_at")

@@ -10,6 +10,8 @@ export interface ResetResult {
   activity_log_removed: number
   saved_views_removed: number
   pipeline_schools_removed: number
+  campaign_schools_removed: number
+  campaigns_removed: number
   schools_uncontacted_reset: number
 }
 

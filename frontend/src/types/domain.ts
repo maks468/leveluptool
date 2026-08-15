@@ -90,6 +90,9 @@ export interface School {
   enrichment_level: EnrichmentLevel
   is_active: boolean
   in_pipeline: boolean
+  /** The campaign container this school is parked in, if any -- a school
+   * lives in exactly one place: Library only, pipeline, or one campaign. */
+  campaign_name: string | null
   stage: PipelineStage | null
   next_action_note: string | null
   next_action_date: string | null
@@ -343,6 +346,35 @@ export interface Tag {
   id: number
   name: string
   color: string
+}
+
+/** A named batch of schools parked OUT of the pipeline -- pure storage for
+ * tracking which schools went into which outreach batch, so none is ever
+ * doubled. Nothing is sent from here. */
+export interface Campaign {
+  id: number
+  name: string
+  created_at: string
+  school_count: number
+}
+
+export interface CampaignSchoolEntry {
+  id: number
+  name: string
+  level: SchoolLevel
+  voivodeship: string | null
+  city: string | null
+  is_private: boolean | null
+  student_count: number | null
+  name_disambiguator: string | null
+  score: number | null
+  /** Pipeline stage the school held at the moment it was parked here. */
+  stage_at_move: PipelineStage
+  added_at: string
+}
+
+export interface CampaignDetail extends Campaign {
+  schools: CampaignSchoolEntry[]
 }
 
 export const TAG_COLORS = ["slate", "indigo", "green", "red", "amber", "cyan", "violet", "blue", "purple"] as const

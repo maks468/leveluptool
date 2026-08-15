@@ -44,8 +44,8 @@ export function ResetToolCard() {
         <div className="flex-1">
           <h2 className="text-sm font-semibold text-red-900 dark:text-red-300">Reset tool</h2>
           <p className="mt-1 text-xs text-red-800/80 dark:text-red-300/70">
-            Permanently clears pipeline stages, activity history, enrichment jobs and the contacts they found, tags,
-            saved views, and follow-ups. The school Library, scores, and rankings are kept.
+            Permanently clears pipeline stages, campaigns, activity history, enrichment jobs and the contacts they
+            found, tags, saved views, and follow-ups. The school Library, scores, and rankings are kept.
           </p>
         </div>
         <Button variant="danger" size="sm" onClick={() => setOpen(true)}>
@@ -58,6 +58,7 @@ export function ResetToolCard() {
           <p className="text-sm text-[var(--color-text-muted)]">This permanently deletes, for every school:</p>
           <ul className="list-inside list-disc space-y-0.5 text-sm text-[var(--color-text-muted)]">
             <li>Pipeline stage and follow-up dates</li>
+            <li>Campaigns and their school lists</li>
             <li>Activity log entries</li>
             <li>Enrichment jobs and the director/English-teacher/email contacts they found</li>
             <li>Tags and saved views</li>
@@ -105,8 +106,9 @@ export function ResetToolCard() {
 
       {result && (
         <div className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3 text-xs text-[var(--color-text-muted)]">
-          Reset complete: {result.pipeline_schools_removed} pipeline schools, {result.activity_log_removed} activity
-          entries, {result.enrichment_jobs_removed} enrichment jobs, {result.school_contacts_removed} contacts,{" "}
+          Reset complete: {result.pipeline_schools_removed} pipeline schools, {result.campaigns_removed} campaigns (
+          {result.campaign_schools_removed} schools), {result.activity_log_removed} activity entries,{" "}
+          {result.enrichment_jobs_removed} enrichment jobs, {result.school_contacts_removed} contacts,{" "}
           {result.tags_removed} tags, and {result.saved_views_removed} saved views removed.
         </div>
       )}

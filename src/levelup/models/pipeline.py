@@ -26,6 +26,10 @@ class ActivityType(str, enum.Enum):
     OWNERSHIP_SUBTYPE_CONFIRMED = "ownership_subtype_confirmed"
     PULLED_INTO_PIPELINE = "pulled_into_pipeline"
     WEBSITE_URL_CORRECTED = "website_url_corrected"
+    # The school left the pipeline into a campaign container. Kept OUT of
+    # reset.OUTREACH_ACTIVITY_TYPES: it explains a persisting campaign
+    # membership, so it must survive a pipeline clear.
+    MOVED_TO_CAMPAIGN = "moved_to_campaign"
     # Reserved, unused until automation ships — added now so the enum grows
     # additively later instead of breaking existing consumers.
     EMAIL_SENT = "email_sent"

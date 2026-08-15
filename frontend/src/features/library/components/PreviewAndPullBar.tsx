@@ -16,7 +16,11 @@ export function PreviewAndPullBar() {
   const { filters, sort, previewedCount, setPreviewedCount } = useLibraryFilters()
   const { selectedIds, setMany, clear: clearSelection } = useLibrarySelection()
   const [limit, setLimit] = useState<string>("")
-  const [result, setResult] = useState<{ pulled_new: number; already_in_pipeline: number } | null>(null)
+  const [result, setResult] = useState<{
+    pulled_new: number
+    already_in_pipeline: number
+    already_in_campaign: number
+  } | null>(null)
   const queryClient = useQueryClient()
 
   const previewMutation = useMutation({
@@ -186,7 +190,10 @@ export function PreviewAndPullBar() {
 
       {result && (
         <span className="text-sm text-green-600">
-          Pulled {result.pulled_new} new{result.already_in_pipeline > 0 && ` (${result.already_in_pipeline} already in pipeline)`}
+          Pulled {result.pulled_new} new
+          {result.already_in_pipeline > 0 && ` (${result.already_in_pipeline} already in pipeline)`}
+          {result.already_in_campaign > 0 &&
+            ` (${result.already_in_campaign} skipped — parked in a campaign; return them from the Campaigns tab if needed)`}
         </span>
       )}
     </div>

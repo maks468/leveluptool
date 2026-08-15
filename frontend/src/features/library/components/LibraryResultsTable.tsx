@@ -188,6 +188,11 @@ export function LibraryResultsTable() {
                       In pipeline
                     </Badge>
                   )}
+                  {school.campaign_name && (
+                    <Badge color="cyan" className="ml-2" title={`Parked in campaign "${school.campaign_name}" — pull-into-pipeline skips it`}>
+                      {school.campaign_name}
+                    </Badge>
+                  )}
                   {school.is_adult_education && (
                     <Badge color="amber" className="ml-2">
                       Adult education
