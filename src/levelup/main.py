@@ -82,7 +82,15 @@ if FRONTEND_DIST.is_dir():
     def serve_spa(full_path: str):
         """Serve the built SPA: a real static asset if the path maps to one,
         otherwise index.html so client-side routes (/pipeline, /library, ...)
-        resolve on a hard refresh or a shared deep link. API 404s stay JSON."""
+        resolve on a hard refresh or a shared deep link. API 404s stay JSON.
+
+        Caching is split by whether the file's NAME carries its content hash.
+        Vite emits assets as index-<hash>.js/css -- a changed file gets a new
+        name, so those can be cached forever. index.html keeps a stable name
+        across deploys and is what points AT the hashed names -- serving it
+        without no-cache let browsers keep an old copy and show a stale app
+        after a rebuild (confirmed directly: a redeploy here looked like "the
+        changes aren't live" until a manual hard refresh)."""
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not found")
         candidate = (_dist_root / full_path).resolve()
@@ -91,5 +99,12 @@ if FRONTEND_DIST.is_dir():
             and candidate.is_file()
             and str(candidate).startswith(str(_dist_root))  # no path traversal out of dist
         ):
-            return FileResponse(candidate)
-        return FileResponse(_index)
+            headers = (
+                {"Cache-Control": "public, max-age=31536000, immutable"}
+                if full_path.startswith("assets/")
+                else {"Cache-Control": "no-cache"}
+            )
+            return FileResponse(candidate, headers=headers)
+        # no-cache != don't cache: the browser may keep a copy but must
+        # revalidate before using it, so every load sees the current deploy.
+        return FileResponse(_index, headers={"Cache-Control": "no-cache"})
