@@ -1733,16 +1733,22 @@ def _merge(result: dict, found: dict, *, tier: int = 0, third_party: bool = Fals
 
 
 def _is_complete(result: dict) -> bool:
-    # A recruitment-tier email alone doesn't count as "done" -- it stops
-    # the crawler from spending its remaining page budget looking for a
-    # personal or office address that might still be a click away. Any
-    # office-tier candidate (or better) is good enough to stop on, though;
-    # holding out for a confirmed-personal one specifically would burn the
-    # whole budget on schools where no such address exists at all (final
-    # personal-vs-generic attribution happens after the crawl, in jobs.py).
+    # Only a PERSONAL-candidate address (priority 0 -- an unrecognized
+    # local part that may be someone's own box) ends the crawl early.
+    # This used to stop on any office-tier address too, which directly
+    # contradicted the tool's contact priority -- confirmed directly:
+    # sp.zsosto.pl's /kadra/ lists seven English teachers' personal
+    # emails, but the crawl declared itself complete on
+    # "sekretariat@zsosto.pl" one page short of ever fetching it, with
+    # half its page budget unspent. Holding out for a personal candidate
+    # is bounded (MAX_SAME_SITE_PAGES caps the worst case at a few extra
+    # fetches on schools that only ever publish an office box), and a
+    # school that DOES publish personal addresses is exactly the school
+    # worth the extra pages. (Final personal-vs-generic attribution still
+    # happens after the crawl, in jobs.py.)
     emails = result.get("all_emails") or set()
-    good_enough_email = bool(emails) and min((email_priority(e) for e in emails), default=2) < 2
-    return bool(result["director_name"] and result["english_teacher_name"] and good_enough_email)
+    personal_candidate = bool(emails) and min((email_priority(e) for e in emails), default=2) < 1
+    return bool(result["director_name"] and result["english_teacher_name"] and personal_candidate)
 
 
 def _render_page(browser, url: str, sources_checked: list[dict]) -> str | None:
@@ -2223,6 +2229,14 @@ def scrape_school_website(
                     # chain in another city (the TEB Rzeszów/Świdnica
                     # failure) -- adopting that poisons every future run.
                     own_school_subsite_url = link
+                    # The dedicated subsite is strictly better ground than
+                    # the complex's shared pages -- drop every queued link
+                    # on another host so the remaining page budget is spent
+                    # here. Confirmed directly: without this, two stale
+                    # /szkola-podstawowa/* pages on the hub host were
+                    # fetched ahead of the subsite's own /kadra/ (the page
+                    # with the personal emails), which never got reached.
+                    frontier[:] = [pair for pair in frontier if _same_organization_host(pair[1], link)]
                 frontier.extend(pair for pair in found["subpage_links"] if _dedup_key(pair[1]) not in visited)
             else:
                 sources_checked.append({"url": link, "status": "unreachable"})

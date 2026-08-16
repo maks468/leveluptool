@@ -10,7 +10,11 @@ level.
 
 from bs4 import BeautifulSoup
 
-from levelup.services.enrichment.scraper import _find_subpage_links, _same_level_subsite_host
+from levelup.services.enrichment.scraper import (
+    _find_subpage_links,
+    _is_complete,
+    _same_level_subsite_host,
+)
 
 PRIMARY = "SPOŁECZNA SZKOŁA PODSTAWOWA NR 1 IM. JANA NOWAKA-JEZIORAŃSKIEGO"
 LICEUM = "SPOŁECZNE LICEUM OGÓLNOKSZTAŁCĄCE NR 1"
@@ -66,3 +70,20 @@ def test_unlabelled_subsite_link_gets_hub_tier_from_a_rich_page():
     assert found.get("https://www.zsosto.pl/szkola-podstawowa/kontakt/") is not None
     # And a genuinely external domain never sneaks in.
     assert all("librus" not in url for url in found)
+
+
+def test_office_email_no_longer_ends_the_crawl_early():
+    """The other half of the zsosto failure: with both names known, a bare
+    sekretariat@ used to declare the crawl complete -- one page short of
+    the staff page with seven personal teacher emails. Only a
+    personal-candidate address (unrecognized local part) may stop it now."""
+    base = {"director_name": "Anna Kowalska", "english_teacher_name": "Jan Nowak"}
+
+    assert not _is_complete({**base, "all_emails": {"sekretariat@zsosto.pl"}})
+    assert not _is_complete({**base, "all_emails": {"rekrutacja@zsosto.pl"}})
+    assert not _is_complete({**base, "all_emails": set()})
+    # A personal-shaped candidate ends it -- and only alongside both names.
+    assert _is_complete({**base, "all_emails": {"agata.bien@zsosto.pl"}})
+    assert not _is_complete(
+        {"director_name": None, "english_teacher_name": "Jan Nowak", "all_emails": {"agata.bien@zsosto.pl"}}
+    )
