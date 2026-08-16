@@ -1,9 +1,9 @@
 import { api, API_BASE_URL } from "./client"
 import type {
   ActivityLogEntry,
-  EnrichmentLevel,
   LibraryFilters,
   MapSchool,
+  PipelineEnrichmentFilter,
   PipelineListResponse,
   PipelineSchool,
   PipelineStage,
@@ -26,7 +26,7 @@ export interface PipelineQueryArgs {
   scoreMin?: number | null
   scoreMax?: number | null
   scoreIncludeUnscored?: boolean
-  enrichmentLevel?: EnrichmentLevel | null
+  enrichmentLevel?: PipelineEnrichmentFilter | null
   sort?: string
 }
 

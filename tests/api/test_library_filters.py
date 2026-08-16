@@ -44,6 +44,13 @@ SCHOOL_FIXTURES: dict[str, list[tuple[str, str | None, str | None]]] = {
         ("director", "Ewa Nowak", "ewa.nowak@sp3.pl"),
         ("general", None, "sekretariat@sp3.pl"),
     ],
+    # Both decision-makers have their own address -- used to pin the
+    # teacher-above-director priority.
+    "both-personal-emails": [
+        ("director", "Ewa Lis", "ewa.lis@sp16.pl"),
+        ("english_coordinator", "Tomasz Gruca", "tomasz.gruca@sp16.pl"),
+        ("general", None, "sekretariat@sp16.pl"),
+    ],
     # -- partial: the English teacher is named, no personal address yet ------
     "teacher-named-only": [("english_coordinator", "Maria Lis", None)],
     # A named teacher beats a named director + office mailbox (partial > basic).
@@ -147,6 +154,7 @@ def test_python_levels_match_the_documented_fixture_intent(session):
     assert levels["director-personal-email"] == "successful"
     assert levels["teacher-personal-email"] == "successful"
     assert levels["personal-plus-office"] == "successful"
+    assert levels["both-personal-emails"] == "successful"
     assert levels["teacher-named-only"] == "partial"
     assert levels["teacher-named-and-director-basic"] == "partial"
     assert levels["director-named-plus-office-email"] == "basic"
@@ -164,6 +172,32 @@ def test_sql_predicates_agree_with_python_levels(session, level):
         for school in session.query(School).filter(_enrichment_predicate(level)).all()
     }
     assert from_sql == from_python
+
+
+def test_successful_teacher_is_the_teacher_email_subset_of_successful(session):
+    """The top-priority refinement: only schools where the ENGLISH TEACHER's
+    own address was found -- a director-only success doesn't qualify."""
+    teacher_successes = names_matching(session, enrichment="successful_teacher")
+
+    assert teacher_successes == {"teacher-personal-email", "both-personal-emails"}
+    assert "director-personal-email" not in teacher_successes
+    # Strictly a subset of "successful", never something outside it.
+    assert teacher_successes < names_matching(session, enrichment="successful")
+
+
+def test_best_email_prefers_the_teacher_over_the_director(session):
+    """The standing priority: for an English-language program the English
+    teacher's own address always outranks the director's, which outranks
+    the office mailbox."""
+    from levelup.api.v1.schools import _compute_best_emails
+    from levelup.models.school import School
+
+    ids = {school.name: school.id for school in session.query(School).all()}
+    best = _compute_best_emails(session, list(ids.values()))
+
+    assert best[ids["both-personal-emails"]] == "tomasz.gruca@sp16.pl"  # teacher, not director
+    assert best[ids["director-personal-email"]] == "anna.wojda@sp1.pl"  # director when no teacher email
+    assert best[ids["office-email-only"]] == "kontakt@sp13.pl"  # office as last resort
 
 
 def test_enriched_is_exactly_the_complement_of_not_enriched(session):

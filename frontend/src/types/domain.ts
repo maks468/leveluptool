@@ -318,9 +318,16 @@ export interface LibraryFilters {
 export type EnrichmentFilter =
   | "all"
   | EnrichmentLevel
+  /** Refinement of "successful": the ENGLISH TEACHER's own email was found --
+   * the top-priority contact, always ranked above the director's. */
+  | "successful_teacher"
   | "enriched"
   | "attempted"
   | "never_attempted"
+
+/** What the Pipeline's enrichment dropdown can send: the four levels plus
+ * the teacher-email refinement. */
+export type PipelineEnrichmentFilter = EnrichmentLevel | "successful_teacher"
 
 export type PipelineStatusFilter = "all" | "in" | "out"
 

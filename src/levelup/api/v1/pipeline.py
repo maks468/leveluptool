@@ -30,6 +30,7 @@ from levelup.api.v1.schools import (
     _apply_filters,
     _compute_best_emails,
     _compute_enrichment_levels,
+    _enrichment_predicate,
     _to_out,
 )
 from levelup.core.db import get_session
@@ -94,6 +95,7 @@ def _describe_pull_criteria(filters: dict, limit: int | None) -> str:
         "enriched": "enriched",
         "not_enriched": "not enriched",
         "successful": "enrichment: successful",
+        "successful_teacher": "teacher email found",
         "partial": "enrichment: partial",
         "basic": "enrichment: basic",
         "attempted": "enrichment attempted",
@@ -134,22 +136,6 @@ def _pipeline_school_out(
         best_email=best_email,
         pull_criteria=state.pull_criteria,
     )
-
-
-def _filter_ids_by_enrichment_level(session: Session, school_ids: list[int], enrichment_level: str) -> list[int]:
-    """enrichment_level isn't a column -- it's computed from SchoolContact
-    rows (see _compute_enrichment_levels), so it can't be pushed down as a
-    plain SQL WHERE like every other pipeline filter. Instead: compute it
-    for every id the OTHER filters already matched (the pipeline is a
-    bounded, actively-worked set -- hundreds to low thousands of schools,
-    not the whole 25k-school library -- so this is cheap), then keep only
-    the ids at the requested level. Called BEFORE pagination so the total
-    count and page slicing are both correct for the filtered set, not the
-    unfiltered one."""
-    if not school_ids:
-        return []
-    levels = _compute_enrichment_levels(session, school_ids)
-    return [sid for sid in school_ids if levels.get(sid, "not_enriched") == enrichment_level]
 
 
 def _apply_pipeline_filters(
@@ -223,9 +209,13 @@ def _apply_pipeline_filters(
             conditions.append(SchoolScore.total_score.is_(None))
         query = query.filter(or_(*conditions))
     if enrichment_level:
-        candidate_ids = [row[0] for row in query.with_entities(School.id).all()]
-        matched_ids = _filter_ids_by_enrichment_level(session, candidate_ids, enrichment_level)
-        query = query.filter(School.id.in_(matched_ids))
+        # The Library's SQL mirror of the enrichment levels (proven
+        # equivalent to the Python computation by the anti-drift test in
+        # tests/api/test_library_filters.py) -- also covers the refinements
+        # like successful_teacher that aren't levels of their own.
+        predicate = _enrichment_predicate(enrichment_level)
+        if predicate is not None:
+            query = query.filter(predicate)
     return query
 
 
@@ -245,7 +235,7 @@ def list_pipeline(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    enrichment_level: str | None = Query(None, description="not_enriched|basic|partial|successful"),
+    enrichment_level: str | None = Query(None, description="not_enriched|basic|partial|successful|successful_teacher"),
     sort: str = "stage_updated_at:desc",
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
@@ -317,7 +307,7 @@ def list_pipeline_ids(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    enrichment_level: str | None = Query(None, description="not_enriched|basic|partial|successful"),
+    enrichment_level: str | None = Query(None, description="not_enriched|basic|partial|successful|successful_teacher"),
 ):
     """Every school id in the pipeline matching the given filters, across
     all pages (highest score first) -- lets the UI act on a whole filtered
@@ -366,7 +356,7 @@ def export_pipeline_csv(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    enrichment_level: str | None = Query(None, description="not_enriched|basic|partial|successful"),
+    enrichment_level: str | None = Query(None, description="not_enriched|basic|partial|successful|successful_teacher"),
     sort: str = "stage_updated_at:desc",
 ):
     """CSV export of a filtered Pipeline segment -- matches exactly what's

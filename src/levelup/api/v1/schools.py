@@ -274,6 +274,13 @@ def _enrichment_predicate(enrichment: str):
         SchoolContact.contact_type.in_(("director", "english_coordinator")),
         _sql_is_priority_email(SchoolContact.email),
     )
+    # The subset of "successful" that found the TOP-priority contact: the
+    # English teacher's own address (always ranked above the director's for
+    # an English-language program -- see _compute_best_emails).
+    teacher_priority_email = _contact_exists(
+        SchoolContact.contact_type == "english_coordinator",
+        _sql_is_priority_email(SchoolContact.email),
+    )
     teacher_named = _contact_exists(SchoolContact.contact_type == "english_coordinator", named)
     director_named = _contact_exists(SchoolContact.contact_type == "director", named)
     general_email = _contact_exists(
@@ -294,6 +301,9 @@ def _enrichment_predicate(enrichment: str):
 
     return {
         "successful": has_priority_email,
+        # Not a fifth level -- a refinement of "successful", so it doesn't
+        # exclude the other levels' conditions the way partial/basic must.
+        "successful_teacher": teacher_priority_email,
         "partial": and_(not_(has_priority_email), teacher_named),
         "basic": and_(
             not_(has_priority_email), not_(teacher_named), director_named, general_email
@@ -313,12 +323,14 @@ def _enrichment_predicate(enrichment: str):
 
 def _compute_best_emails(session: Session, school_ids: list[int]) -> dict[int, str | None]:
     """The single best contact email per school for an outreach campaign:
-    a decision-maker's OWN (personal-verified) address first -- director,
-    then English teacher -- otherwise the general office/secretariat mailbox.
-    None when no email was found at all. director/english_coordinator
-    contacts only ever carry a personal-verified address (see jobs.py), so
-    preferring them targets a real person; the general row is the reliable
-    fallback that always lands in the school's inbox."""
+    a person's OWN (personal-verified) address first -- the ENGLISH TEACHER
+    above the director, always: for an English-language program the teacher
+    is the top-priority contact, the director second -- otherwise the
+    general office/secretariat mailbox. None when no email was found at
+    all. director/english_coordinator contacts only ever carry a
+    personal-verified address (see jobs.py), so preferring them targets a
+    real person; the general row is the reliable fallback that always lands
+    in the school's inbox."""
     if not school_ids:
         return {}
     contacts = session.query(SchoolContact).filter(SchoolContact.school_id.in_(school_ids)).all()
@@ -330,7 +342,7 @@ def _compute_best_emails(session: Session, school_ids: list[int]) -> dict[int, s
     for school_id in school_ids:
         school_contacts = by_school.get(school_id, [])
         chosen = None
-        for contact_type in ("director", "english_coordinator", "general"):
+        for contact_type in ("english_coordinator", "director", "general"):
             chosen = next((c.email for c in school_contacts if c.contact_type == contact_type and c.email), None)
             if chosen:
                 break
@@ -409,7 +421,7 @@ def list_schools(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    enrichment: str = Query("all", description="all|enriched|not_enriched|successful|partial|basic|attempted|never_attempted"),
+    enrichment: str = Query("all", description="all|enriched|not_enriched|successful|successful_teacher|partial|basic|attempted|never_attempted"),
     pipeline_status: str = Query("all", description="all|in|out -- whether the school is already in the pipeline"),
     sort: str = "score:desc",
     page: int = Query(1, ge=1),
@@ -481,7 +493,7 @@ def count_schools(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    enrichment: str = Query("all", description="all|enriched|not_enriched|successful|partial|basic|attempted|never_attempted"),
+    enrichment: str = Query("all", description="all|enriched|not_enriched|successful|successful_teacher|partial|basic|attempted|never_attempted"),
     pipeline_status: str = Query("all", description="all|in|out -- whether the school is already in the pipeline"),
 ):
     query = _apply_filters(
@@ -521,7 +533,7 @@ def list_school_ids(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    enrichment: str = Query("all", description="all|enriched|not_enriched|successful|partial|basic|attempted|never_attempted"),
+    enrichment: str = Query("all", description="all|enriched|not_enriched|successful|successful_teacher|partial|basic|attempted|never_attempted"),
     pipeline_status: str = Query("all", description="all|in|out -- whether the school is already in the pipeline"),
 ):
     """Every school id matching the given filters, across every page --
@@ -565,7 +577,7 @@ def export_schools_csv(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    enrichment: str = Query("all", description="all|enriched|not_enriched|successful|partial|basic|attempted|never_attempted"),
+    enrichment: str = Query("all", description="all|enriched|not_enriched|successful|successful_teacher|partial|basic|attempted|never_attempted"),
     pipeline_status: str = Query("all", description="all|in|out -- whether the school is already in the pipeline"),
     sort: str = "score:desc",
 ):

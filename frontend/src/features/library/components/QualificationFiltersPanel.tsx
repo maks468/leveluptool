@@ -20,6 +20,7 @@ const ENRICHMENT_OPTIONS = [
   { value: "enriched", label: "Enriched — contacts found" },
   { value: "not_enriched", label: "Not enriched — nothing found" },
   { value: "successful", label: "· Successful — personal email" },
+  { value: "successful_teacher", label: "· Teacher email — top priority" },
   { value: "partial", label: "· Partial — teacher named" },
   { value: "basic", label: "· Basic — director + office email" },
   { value: "attempted", label: "Attempted — ran, any outcome" },

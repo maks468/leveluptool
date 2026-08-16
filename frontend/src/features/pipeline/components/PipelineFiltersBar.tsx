@@ -3,7 +3,13 @@ import { listCities, listVoivodeships } from "@/api/schools"
 import { listTags } from "@/api/crm"
 import { queryKeys } from "@/api/queryKeys"
 import { ENRICHMENT_LEVEL_CONFIG } from "@/components/shared/EnrichmentLevelBadge"
-import { PIPELINE_STAGES, STAGE_LABELS, type EnrichmentLevel, type PipelineStage } from "@/types/domain"
+import {
+  PIPELINE_STAGES,
+  STAGE_LABELS,
+  type EnrichmentLevel,
+  type PipelineEnrichmentFilter,
+  type PipelineStage,
+} from "@/types/domain"
 
 const ENRICHMENT_LEVELS: EnrichmentLevel[] = ["not_enriched", "basic", "partial", "successful"]
 
@@ -29,7 +35,7 @@ export interface PipelineFilterState {
   scoreMin: number | null
   scoreMax: number | null
   scoreIncludeUnscored: boolean
-  enrichmentLevel: EnrichmentLevel | null
+  enrichmentLevel: PipelineEnrichmentFilter | null
 }
 
 /** Everything a saved Pipeline view needs to restore -- PipelineFilterState
@@ -227,7 +233,9 @@ export function PipelineFiltersBar({
         <select
           className="w-40 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
           value={filters.enrichmentLevel ?? ""}
-          onChange={(e) => onChange({ enrichmentLevel: e.target.value === "" ? null : (e.target.value as EnrichmentLevel) })}
+          onChange={(e) =>
+            onChange({ enrichmentLevel: e.target.value === "" ? null : (e.target.value as PipelineEnrichmentFilter) })
+          }
         >
           <option value="">Any</option>
           {ENRICHMENT_LEVELS.map((level) => (
@@ -235,6 +243,7 @@ export function PipelineFiltersBar({
               {ENRICHMENT_LEVEL_CONFIG[level].label}
             </option>
           ))}
+          <option value="successful_teacher">Teacher email — top priority</option>
         </select>
       </div>
 
