@@ -21,7 +21,11 @@ from levelup.models.pipeline import ActivityLog, ActivityType, PipelineStage, Pi
 from levelup.models.school import School, SchoolLevel
 from levelup.models.user import User
 from levelup.services.admin.reset import clear_pipeline, reset_pipeline_workflow
-from levelup.services.pipeline.campaigns import move_to_campaign, return_to_pipeline
+from levelup.services.pipeline.campaigns import (
+    move_to_campaign,
+    return_all_to_pipeline,
+    return_to_pipeline,
+)
 from levelup.services.pipeline.stages import pull_into_pipeline
 
 
@@ -105,6 +109,28 @@ def test_return_restores_the_stage_it_left_with(session):
     assert state.stage == PipelineStage.CONTACTED  # not reset to not_contacted
     assert session.query(CampaignSchool).filter_by(school_id=1).count() == 0
     assert 'Returned from campaign "September mailing"' == state.pull_criteria
+
+
+def test_return_all_empties_the_container_but_keeps_it(session):
+    """Whole-campaign return: every school back on the working queue at its
+    own snapshotted stage; the container survives, empty -- emptying and
+    deleting stay two separate acts."""
+    move_to_campaign(session, campaign(session), [1, 2], actor_id=1)
+
+    moved = return_all_to_pipeline(session, campaign(session), actor_id=1)
+
+    assert moved == 2
+    stages = {s.school_id: s.stage for s in session.query(PipelineState).all()}
+    assert stages[1] == PipelineStage.CONTACTED  # each at its OWN stage
+    assert stages[2] == PipelineStage.NOT_CONTACTED
+    assert session.query(CampaignSchool).filter_by(campaign_id=1).count() == 0
+    assert session.query(Campaign).filter_by(id=1).count() == 1  # container kept
+    # The other campaign is untouched.
+    assert session.query(CampaignSchool).filter_by(campaign_id=99).count() == 1
+
+
+def test_return_all_on_an_empty_campaign_is_harmless(session):
+    assert return_all_to_pipeline(session, campaign(session), actor_id=1) == 0
 
 
 def test_move_and_return_leave_an_activity_trail(session):

@@ -22,7 +22,11 @@ from levelup.core.security import get_current_user
 from levelup.models.campaign import Campaign, CampaignSchool
 from levelup.models.score import CurrentScore, SchoolScore
 from levelup.models.user import User
-from levelup.services.pipeline.campaigns import move_to_campaign, return_to_pipeline
+from levelup.services.pipeline.campaigns import (
+    move_to_campaign,
+    return_all_to_pipeline,
+    return_to_pipeline,
+)
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
@@ -142,6 +146,21 @@ def return_school(
         raise HTTPException(404, "School is not in this campaign")
     return_to_pipeline(session, membership, actor_id=user.id)
     return MoveToCampaignResult(moved=1, not_in_pipeline=0, already_in_campaign=0)
+
+
+@router.post("/{campaign_id}/return-all", response_model=MoveToCampaignResult)
+def return_all_schools(
+    campaign_id: int,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """Empties the whole campaign back into the pipeline -- every school at
+    the stage it held when it was parked. The empty container survives."""
+    campaign = session.query(Campaign).filter_by(id=campaign_id).one_or_none()
+    if campaign is None:
+        raise HTTPException(404, "Campaign not found")
+    moved = return_all_to_pipeline(session, campaign, actor_id=user.id)
+    return MoveToCampaignResult(moved=moved, not_in_pipeline=0, already_in_campaign=0)
 
 
 @router.delete("/{campaign_id}", response_model=CampaignOut)

@@ -31,6 +31,12 @@ export async function returnSchoolToPipeline(campaignId: number, schoolId: numbe
   return api.post<MoveToCampaignResult>(`/campaigns/${campaignId}/schools/${schoolId}/return`, {})
 }
 
+/** Empties the whole campaign back into the pipeline -- every school at the
+ * stage it held when it was parked. The empty container survives. */
+export async function returnAllToPipeline(campaignId: number): Promise<MoveToCampaignResult> {
+  return api.post<MoveToCampaignResult>(`/campaigns/${campaignId}/return-all`, {})
+}
+
 /** Deletes the container and its memberships -- the schools become plain
  * Library rows again (NOT pipeline rows). */
 export async function deleteCampaign(campaignId: number): Promise<Campaign> {

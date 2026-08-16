@@ -1,7 +1,14 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Archive, Plus, Trash2, Undo2 } from "lucide-react"
-import { createCampaign, deleteCampaign, getCampaign, listCampaigns, returnSchoolToPipeline } from "@/api/campaigns"
+import {
+  createCampaign,
+  deleteCampaign,
+  getCampaign,
+  listCampaigns,
+  returnAllToPipeline,
+  returnSchoolToPipeline,
+} from "@/api/campaigns"
 import { queryKeys } from "@/api/queryKeys"
 import { Button } from "@/components/ui/Button"
 import { Badge } from "@/components/ui/Badge"
@@ -50,6 +57,17 @@ export function CampaignsPage() {
 
   const returnMutation = useMutation({
     mutationFn: (schoolId: number) => returnSchoolToPipeline(activeCampaignId as number, schoolId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.campaigns() })
+      queryClient.invalidateQueries({ queryKey: ["campaign"] })
+      queryClient.invalidateQueries({ queryKey: ["pipeline"] })
+      queryClient.invalidateQueries({ queryKey: ["schools"] })
+      queryClient.invalidateQueries({ queryKey: ["dashboard-summary"] })
+    },
+  })
+
+  const returnAllMutation = useMutation({
+    mutationFn: (campaignId: number) => returnAllToPipeline(campaignId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.campaigns() })
       queryClient.invalidateQueries({ queryKey: ["campaign"] })
@@ -146,6 +164,25 @@ export function CampaignsPage() {
                       created {formatDate(detail.created_at)}
                     </span>
                   </div>
+                  <div className="flex items-center gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={detail.school_count === 0 || returnAllMutation.isPending}
+                    title="Puts every school in this campaign back into the pipeline, each at the stage it had when it was moved here"
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          `Return all ${detail.school_count} schools from "${detail.name}" to the pipeline? Each goes back at the stage it had when it was moved here. The empty campaign stays until you delete it.`
+                        )
+                      ) {
+                        returnAllMutation.mutate(detail.id)
+                      }
+                    }}
+                  >
+                    <Undo2 className="h-3.5 w-3.5" />
+                    Return all to pipeline
+                  </Button>
                   <Button
                     variant="danger"
                     size="sm"
@@ -163,6 +200,7 @@ export function CampaignsPage() {
                     <Trash2 className="h-3.5 w-3.5" />
                     Delete campaign
                   </Button>
+                  </div>
                 </div>
 
                 {detail.schools.length === 0 ? (

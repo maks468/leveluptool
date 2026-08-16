@@ -70,11 +70,9 @@ def move_to_campaign(
     }
 
 
-def return_to_pipeline(session: Session, membership: CampaignSchool, *, actor_id: int) -> None:
-    """The one way out of a campaign: back to the pipeline, at the stage
-    the school had when it was moved. Restoring the stage (rather than
-    resetting to not_contacted) is what keeps the history honest -- a
-    school that was CONTACTED before the campaign is still contacted."""
+def _return_membership(session: Session, membership: CampaignSchool, *, actor_id: int) -> None:
+    """Uncommitted single-school return -- shared by the one-school and
+    whole-campaign variants below so both restore the stage identically."""
     try:
         stage = PipelineStage(membership.stage_at_move)
     except ValueError:  # a stage value from a future/older schema -- be safe
@@ -97,4 +95,29 @@ def return_to_pipeline(session: Session, membership: CampaignSchool, *, actor_id
         metadata={"campaign_id": membership.campaign_id},
     )
     session.delete(membership)
+
+
+def return_to_pipeline(session: Session, membership: CampaignSchool, *, actor_id: int) -> None:
+    """The one way out of a campaign: back to the pipeline, at the stage
+    the school had when it was moved. Restoring the stage (rather than
+    resetting to not_contacted) is what keeps the history honest -- a
+    school that was CONTACTED before the campaign is still contacted."""
+    _return_membership(session, membership, actor_id=actor_id)
     session.commit()
+
+
+def return_all_to_pipeline(session: Session, campaign: Campaign, *, actor_id: int) -> int:
+    """Empties a whole campaign back into the pipeline, each school at its
+    own snapshotted stage. The container itself survives, empty -- deleting
+    it stays a separate, deliberate act (and the two do different things:
+    deleting a campaign makes its schools plain Library rows, this puts
+    them back on the working queue)."""
+    memberships = (
+        session.query(CampaignSchool)
+        .filter(CampaignSchool.campaign_id == campaign.id)
+        .all()
+    )
+    for membership in memberships:
+        _return_membership(session, membership, actor_id=actor_id)
+    session.commit()
+    return len(memberships)
