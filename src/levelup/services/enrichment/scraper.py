@@ -30,7 +30,7 @@ import requests
 import urllib3
 from bs4 import BeautifulSoup
 
-from levelup.services.enrichment.verifier import email_priority
+from levelup.services.enrichment.verifier import email_level_hint, email_priority
 
 # Only reached via the SSLError fallback in fetch_page() below, for sites
 # with a confirmed-broken certificate chain -- the warning is expected
@@ -775,6 +775,43 @@ def _registrable_domain(netloc: str) -> str:
     return ".".join(parts[-2:])
 
 
+# A school complex's homepage often links each member school's dedicated
+# subsite under a level-named SUBDOMAIN of the same registered domain --
+# confirmed directly: zsosto.pl (a rich landing page for a Warsaw STO
+# complex) links its primary school's real site as
+# `<a href="https://sp.zsosto.pl/">wejdź</a>`. The label ("enter") carries
+# no keyword any tier recognizes, and the page is far too rich for the
+# sparse-page chooser-hub heuristic (_find_hub_candidates) to fire -- so
+# the one link leading to the school's own staff page (with per-teacher
+# personal emails) was dropped, and enrichment stopped at the complex's
+# generic pages. The HOST itself is the signal the label lacks: "sp." on
+# the school's own registered domain names a szkoła podstawowa as plainly
+# as a "Szkoła Podstawowa" label would. Reuses the same level-implying
+# shapes as email_level_hint ("sp@smsw.pl" is the primary school's mailbox
+# for exactly the same reason "sp.zsosto.pl" is its subsite), and only
+# ever matches the school's OWN level -- from a primary school's crawl,
+# lo.zsosto.pl stays a sibling, not a candidate.
+_NAME_STEM_TO_LEVEL = (("podstawow", "primary"), ("liceum", "liceum"), ("technikum", "technikum"))
+
+
+def _same_level_subsite_host(full_url: str, base_url: str, school_name: str) -> bool:
+    host = urlparse(full_url).netloc.split(":")[0].lower().removeprefix("www.")
+    base_host = urlparse(base_url).netloc.split(":")[0].lower().removeprefix("www.")
+    if not host or host == base_host:
+        return False
+    domain = _registrable_domain(host)
+    if domain != _registrable_domain(base_host) or not host.endswith("." + domain):
+        return False
+    subdomain = host[: -(len(domain) + 1)]
+    if not subdomain or "." in subdomain:  # one label only -- never a guessed deep host
+        return False
+    implied_level = email_level_hint(f"{subdomain}@x.pl")
+    if implied_level is None:
+        return False
+    name_lower = school_name.lower()
+    return any(stem in name_lower and level == implied_level for stem, level in _NAME_STEM_TO_LEVEL)
+
+
 # A bare "Mozilla/5.0" is itself a bot-detection signal on some sites --
 # a full, current browser UA string is less likely to get silently
 # filtered/blocked than an obviously-fake one.
@@ -1019,14 +1056,23 @@ def _find_subpage_links(soup: BeautifulSoup, base_url: str, school_name: str = "
             # while a label like "Strona główna BIP" (the actual entrance,
             # the only one of those 18 that said so) still is.
             is_bip_tier = tier_offset == 0
+            tier = None
             for i, kws in enumerate(tiers):
                 check_haystack = label if (is_bip_tier and i == 0) else haystack
                 if any(_keyword_matches(kw, check_haystack) for kw in kws):
-                    tier = i
+                    tier = i + tier_offset
                     break
-            else:
-                continue
-            tier += tier_offset
+            if tier is None:
+                # No keyword matched -- but a level-named subdomain of the
+                # school's own domain (sp.zsosto.pl behind a bare "wejdź")
+                # is a hub entrance in its own right; see
+                # _same_level_subsite_host. Same tier -1 as a labelled hub
+                # link: adopted only after the destination itself passes
+                # the city check in the crawl loop.
+                if school_name and _same_level_subsite_host(full, base_url, school_name):
+                    tier = -1
+                else:
+                    continue
         if _registrable_domain(urlparse(full).netloc) != base_domain:
             continue  # same organization only (subdomains OK, e.g. bip.szkola.pl)
         # A same-page anchor ("#kontakt") urljoins to a URL that's never
