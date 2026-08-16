@@ -29,6 +29,7 @@ from levelup.models.school import School
 # only meaningful as part of the pursuit being cleared.
 OUTREACH_ACTIVITY_TYPES = (
     ActivityType.PULLED_INTO_PIPELINE.value,
+    ActivityType.REMOVED_FROM_PIPELINE.value,
     ActivityType.STAGE_CHANGED.value,
     ActivityType.NOTE.value,
     ActivityType.EMAIL_SENT.value,

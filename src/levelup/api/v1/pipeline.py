@@ -20,6 +20,8 @@ from levelup.api.v1.schemas import (
     PullIntoPipelineRequest,
     PullIntoPipelineResult,
     QueueEntryOut,
+    RemoveFromPipelineRequest,
+    RemoveFromPipelineResult,
     SetFollowUpRequest,
     StageChangeRequest,
 )
@@ -39,7 +41,7 @@ from levelup.models.score import CurrentScore, SchoolScore
 from levelup.models.user import User
 from levelup.services.pipeline.activity import log_activity
 from levelup.services.pipeline.geocoding import backfill_missing_coordinates
-from levelup.services.pipeline.stages import change_stage, pull_into_pipeline
+from levelup.services.pipeline.stages import change_stage, pull_into_pipeline, remove_from_pipeline
 
 router = APIRouter(tags=["pipeline"])
 
@@ -621,6 +623,21 @@ def pull(
 
     result = pull_into_pipeline(session, school_ids, owner_id=user.id, actor_id=user.id, pull_criteria=criteria)
     return PullIntoPipelineResult(**result)
+
+
+@router.post("/pipeline/remove", response_model=RemoveFromPipelineResult)
+def remove(
+    body: RemoveFromPipelineRequest,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """Drops schools from the pipeline back to plain Library rows -- stage
+    discarded, re-pullable (unlike moving to a campaign, which parks them
+    re-pull-protected)."""
+    if not body.school_ids:
+        raise HTTPException(400, "Provide at least one school id")
+    result = remove_from_pipeline(session, body.school_ids, actor_id=user.id)
+    return RemoveFromPipelineResult(**result)
 
 
 @router.patch("/schools/{school_id}/stage", response_model=PipelineSchoolOut)

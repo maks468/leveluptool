@@ -30,6 +30,10 @@ class ActivityType(str, enum.Enum):
     # reset.OUTREACH_ACTIVITY_TYPES: it explains a persisting campaign
     # membership, so it must survive a pipeline clear.
     MOVED_TO_CAMPAIGN = "moved_to_campaign"
+    # The school was dropped from the pipeline back to a plain Library row
+    # (no campaign) -- stage discarded, re-pullable. Outreach history, so
+    # unlike MOVED_TO_CAMPAIGN it IS cleared by a pipeline clear.
+    REMOVED_FROM_PIPELINE = "removed_from_pipeline"
     # Reserved, unused until automation ships — added now so the enum grows
     # additively later instead of breaking existing consumers.
     EMAIL_SENT = "email_sent"

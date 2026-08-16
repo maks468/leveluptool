@@ -58,6 +58,36 @@ def pull_into_pipeline(
     }
 
 
+def remove_from_pipeline(session: Session, school_ids: list[int], *, actor_id: int) -> dict[str, int]:
+    """Drops schools from the pipeline back to plain Library rows -- the
+    third movement path next to move_to_campaign (parked, protected from
+    re-pull) and this one (fully released, re-pullable). The stage is
+    deliberately discarded rather than snapshotted anywhere: "move to
+    library" means "this wasn't worth pursuing after all", and a later
+    re-pull should start clean at not_contacted. The removal itself is
+    logged, so the school's activity trail still shows it was once
+    pursued and let go."""
+    states = {
+        s.school_id: s
+        for s in session.query(PipelineState).filter(PipelineState.school_id.in_(school_ids)).all()
+    }
+    for school_id, state in states.items():
+        log_activity(
+            session,
+            school_id=school_id,
+            activity_type=ActivityType.REMOVED_FROM_PIPELINE.value,
+            actor_id=actor_id,
+            note=f"Moved back to Library (was {state.stage.value})",
+            metadata={"stage_at_removal": state.stage.value},
+        )
+        session.delete(state)
+    session.commit()
+    return {
+        "removed": len(states),
+        "not_in_pipeline": len(set(school_ids) - set(states)),
+    }
+
+
 def change_stage(session: Session, school_id: int, new_stage: PipelineStage, actor_id: int) -> PipelineState:
     state = session.query(PipelineState).filter_by(school_id=school_id).one()
     old_stage = state.stage

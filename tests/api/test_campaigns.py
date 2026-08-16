@@ -26,7 +26,7 @@ from levelup.services.pipeline.campaigns import (
     return_all_to_pipeline,
     return_to_pipeline,
 )
-from levelup.services.pipeline.stages import pull_into_pipeline
+from levelup.services.pipeline.stages import pull_into_pipeline, remove_from_pipeline
 
 
 @pytest.fixture()
@@ -109,6 +109,27 @@ def test_return_restores_the_stage_it_left_with(session):
     assert state.stage == PipelineStage.CONTACTED  # not reset to not_contacted
     assert session.query(CampaignSchool).filter_by(school_id=1).count() == 0
     assert 'Returned from campaign "September mailing"' == state.pull_criteria
+
+
+def test_remove_from_pipeline_releases_to_plain_library_row(session):
+    """The release path: gone from the pipeline, NOT parked in any campaign,
+    and -- unlike a campaign member -- immediately re-pullable, starting
+    over at not_contacted (the old CONTACTED stage is deliberately gone)."""
+    result = remove_from_pipeline(session, [1, 3, 4], actor_id=1)
+
+    assert result == {"removed": 1, "not_in_pipeline": 2}  # 3 is campaigned, 4 was never in
+    assert session.query(PipelineState).filter_by(school_id=1).count() == 0
+    assert session.query(CampaignSchool).filter_by(school_id=1).count() == 0
+    removal = (
+        session.query(ActivityLog)
+        .filter_by(school_id=1, activity_type=ActivityType.REMOVED_FROM_PIPELINE.value)
+        .one()
+    )
+    assert "was contacted" in removal.note
+
+    repull = pull_into_pipeline(session, [1], owner_id=1, actor_id=1)
+    assert repull["pulled_new"] == 1
+    assert session.query(PipelineState).filter_by(school_id=1).one().stage == PipelineStage.NOT_CONTACTED
 
 
 def test_return_all_empties_the_container_but_keeps_it(session):

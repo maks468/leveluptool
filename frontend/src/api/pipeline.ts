@@ -129,3 +129,10 @@ export async function getMapSchools(): Promise<MapSchool[]> {
 export async function bulkSetStage(schoolIds: number[], stage: PipelineStage): Promise<{ updated: number }> {
   return api.patch("/pipeline/bulk-stage", { school_ids: schoolIds, stage })
 }
+
+/** Drops schools from the pipeline back to plain Library rows -- stage
+ * discarded, re-pullable (unlike a campaign, which parks them re-pull-
+ * protected). */
+export async function removeFromPipeline(schoolIds: number[]): Promise<{ removed: number; not_in_pipeline: number }> {
+  return api.post("/pipeline/remove", { school_ids: schoolIds })
+}

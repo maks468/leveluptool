@@ -363,6 +363,15 @@ class MoveToCampaignResult(BaseModel):
     already_in_campaign: int
 
 
+class RemoveFromPipelineRequest(BaseModel):
+    school_ids: list[int]
+
+
+class RemoveFromPipelineResult(BaseModel):
+    removed: int
+    not_in_pipeline: int
+
+
 class ClearPipelineResultOut(BaseModel):
     """Reports what survived as well as what went, since the whole point of
     this action is what it DOESN'T touch."""

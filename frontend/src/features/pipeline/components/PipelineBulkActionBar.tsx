@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Archive, CheckSquare, Sparkles, Tag as TagIcon, X } from "lucide-react"
-import { bulkSetStage } from "@/api/pipeline"
+import { Archive, BookMarked, CheckSquare, Sparkles, Tag as TagIcon, X } from "lucide-react"
+import { bulkSetStage, removeFromPipeline } from "@/api/pipeline"
 import { bulkAddTag, createTag, listTags } from "@/api/crm"
 import { createCampaign, listCampaigns, moveSchoolsToCampaign } from "@/api/campaigns"
 import { startEnrichmentJob } from "@/api/enrichment"
@@ -100,6 +100,30 @@ export function PipelineBulkActionBar({
       campaignMutation.mutate({ id: campaign.id, name: campaign.name })
     },
   })
+
+  // The release path: back to a plain Library row, stage discarded,
+  // re-pullable -- vs. the campaign path above, which parks re-pull-
+  // protected with the stage snapshotted.
+  const removeMutation = useMutation({
+    mutationFn: () => removeFromPipeline(Array.from(selectedIds)),
+    onSuccess: (res) => {
+      setResult(`Moved ${res.removed} school${res.removed === 1 ? "" : "s"} back to the Library`)
+      clear()
+      queryClient.invalidateQueries({ queryKey: ["schools"] })
+      invalidateAfterBulkChange(queryClient)
+    },
+  })
+
+  function handleRemoveSelected() {
+    if (
+      !window.confirm(
+        `Move ${selectedIds.size} school${selectedIds.size === 1 ? "" : "s"} back to the Library? They leave the pipeline and their stage is discarded — a later re-pull starts over at "Not contacted". (To park a finished batch and protect it from re-pulls, use "Move to campaign" instead.)`
+      )
+    ) {
+      return
+    }
+    removeMutation.mutate()
+  }
 
   const enrichMutation = useMutation({
     mutationFn: () => startEnrichmentJob(Array.from(selectedIds)),
@@ -284,6 +308,18 @@ export function PipelineBulkActionBar({
           </button>
         </div>
       )}
+
+      <span className="h-6 w-px bg-[var(--color-border)]" />
+
+      <Button
+        size="sm"
+        disabled={removeMutation.isPending}
+        title="Drop the selected schools from the pipeline back to plain Library rows — stage discarded, re-pullable later"
+        onClick={handleRemoveSelected}
+      >
+        <BookMarked className="h-3.5 w-3.5" />
+        Move to Library
+      </Button>
 
       <span className="h-6 w-px bg-[var(--color-border)]" />
 
