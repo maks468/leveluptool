@@ -24,6 +24,7 @@ import re
 import tempfile
 import threading
 import time
+from html import unescape as _html_unescape
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -80,6 +81,61 @@ def _decode_at_dot_obfuscation(text: str) -> str:
 # Polish phrasing. When this appears with no address recovered nearby,
 # decoding would require running the page's own JS, which a plain fetch
 # can't do -- worth flagging honestly rather than silently returning nothing.
+# Joomla's built-in email cloak hides EVERY address on a page behind a
+# JS snippet: a placeholder <span id="cloakXX">This email address is being
+# protected from spambots...</span> plus an inline script holding the real
+# address as concatenated, HTML-entity-encoded string fragments
+# ("var addy_textXX = 'p&#97;tryk...' + '&#64;' + 'zs&#111;st&#111;.pl'").
+# A plain fetch therefore shows the LLM a teacher's name followed by a
+# protection notice and no address at all -- confirmed directly:
+# slojedynka.zsosto.pl/liceum/kadra cloaks 27 staff addresses this way
+# (the whole reason its English teacher came back email-less), and the
+# lone plain-text secretariat address on the page even suppressed the
+# email_cloak_detected note. The fragments ARE the address, though, so
+# they're decoded statically -- no headless browser needed -- and each
+# placeholder span is REPLACED IN PLACE with the decoded address, which
+# both keeps it adjacent to the person's name (what the LLM pairing needs)
+# and removes the misleading protection notice from the text.
+# The fragment strings themselves contain semicolons (every HTML entity
+# ends with one), so the expression is matched as a sequence of whole
+# quoted chunks / identifier references / "+" joiners -- never "up to the
+# next ;", which would cut mid-entity.
+_JOOMLA_ADDY_RE = re.compile(
+    r"addy(_text)?([0-9a-f]{6,})\s*=\s*((?:'[^']*'|addy(?:_text)?[0-9a-f]+|[+\s])+);"
+)
+_JOOMLA_CLOAK_SPAN_RE = re.compile(
+    r"<span[^>]*\bid=['\"]cloak([0-9a-f]{6,})['\"][^>]*>.*?</span>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _decode_joomla_cloaks(html: str) -> str:
+    if "cloak" not in html or "addy" not in html:
+        return html
+    # Fragments accumulate per (id, is_text_variant) across statements --
+    # the plain addy variable is often built over TWO statements
+    # ("addy = '...' ; addy = addy + '...'"), while addy_text usually
+    # holds the whole address in one. Kept separate so the two variants
+    # never concatenate into a doubled address; either one that decodes
+    # to a valid email wins.
+    fragments: dict[tuple[str, bool], list[str]] = {}
+    for m in _JOOMLA_ADDY_RE.finditer(html):
+        key = (m.group(2), bool(m.group(1)))
+        fragments.setdefault(key, []).extend(re.findall(r"'([^']*)'", m.group(3)))
+
+    decoded: dict[str, str] = {}
+    for (cloak_id, _), parts in fragments.items():
+        candidate = _html_unescape("".join(parts))
+        if cloak_id not in decoded and EMAIL_RE.fullmatch(candidate):
+            decoded[cloak_id] = candidate
+
+    if not decoded:
+        return html
+    return _JOOMLA_CLOAK_SPAN_RE.sub(
+        lambda m: decoded.get(m.group(1), m.group(0)), html
+    )
+
+
 EMAIL_CLOAK_RE = re.compile(
     r"(?i:adres\s+(pocztowy|e-?mail)\s+jest\s+chronion\w*\s+przed\s+(spam\w*|robotami)"
     r"|w[łl]ącz\w*\s+(w\s+przeglądarce\s+)?obs[łl]ug\w*\s+javascript"
@@ -1478,6 +1534,10 @@ def _prepare_page_for_llm(html: str, url: str) -> str:
 
 
 def _extract(html: str, url: str, school_name: str = "") -> dict:
+    # Before anything reads this page -- the regex email collector and the
+    # LLM-ready text alike -- swap Joomla's cloak placeholders for the real
+    # addresses their own script fragments encode. See _decode_joomla_cloaks.
+    html = _decode_joomla_cloaks(html)
     soup = BeautifulSoup(html, "html.parser")
     # A <br> is a line break between staff entries; turn it into a real
     # newline so run-together teacher lines separate into distinct entries.
