@@ -7,6 +7,16 @@ services:
       # Same-origin serving makes CORS irrelevant; set your domain only if
       # you ever run the Vite dev server against this backend.
       LEVELUP_CORS_ORIGINS: "https://YOUR-DOMAIN.example.com"
+      # LLM-extraction auth for headless/container use. The mounted
+      # .claude/.credentials.json is only alive on hosts where Claude Code
+      # itself keeps file-based tokens fresh -- on Windows it keeps them in
+      # the Credential Manager instead, so the file goes stale and every
+      # extraction fails 'authentication_failed' (confirmed directly:
+      # refresh token in the mounted file had expired days earlier). Mint a
+      # long-lived token with `claude setup-token` on the host and put it
+      # in .env (gitignored) as CLAUDE_CODE_OAUTH_TOKEN=... -- the CLI the
+      # SDK spawns prefers this over the mounted file.
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
     volumes:
       - ./data:/app/data        # SQLite DB + enrichment cache + imports (seed lives here too)
       - ./config:/app/config    # rubric weights, editable live
@@ -17,6 +27,13 @@ services:
       # ${USERPROFILE} is the home dir; on a Linux VM replace with the path
       # you copied your .claude directory to (see DEPLOY.md).
       - ${USERPROFILE:-~}/.claude:/root/.claude
+      # The CLI's main config is a FILE beside that directory, not inside
+      # it -- without this mount the container's CLI has no account at all
+      # and every extraction fails 'authentication_failed' (confirmed
+      # directly: names/emails visible in the crawled HTML were silently
+      # dropped because the accuracy policy only lets the LLM path write
+      # them). Read-only: the app must never rewrite the host's config.
+      - ${USERPROFILE:-~}/.claude.json:/root/.claude.json:ro
     ports:
       # Reachable at http://localhost:8322 on the machine running it. Bound to
       # loopback so that on a public VM it is NOT exposed directly -- there,
