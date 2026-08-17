@@ -26,6 +26,10 @@ class Campaign(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    # Free-form note about what this batch IS ("wysyłka wrzesień, mazowieckie
+    # 70+, template B") -- the container's label explains which schools,
+    # this explains why/what was sent. Optional.
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     schools: Mapped[list["CampaignSchool"]] = relationship(

@@ -1,4 +1,4 @@
-import { api } from "./client"
+import { api, API_BASE_URL } from "./client"
 import type { Campaign, CampaignDetail } from "@/types/domain"
 
 export interface MoveToCampaignResult {
@@ -17,6 +17,21 @@ export async function createCampaign(name: string): Promise<Campaign> {
 
 export async function getCampaign(id: number): Promise<CampaignDetail> {
   return api.get<CampaignDetail>(`/campaigns/${id}`)
+}
+
+/** Rename and/or edit the description -- send only the fields to change.
+ * An empty-string description clears it. */
+export async function updateCampaign(
+  id: number,
+  patch: { name?: string; description?: string }
+): Promise<Campaign> {
+  return api.patch<Campaign>(`/campaigns/${id}`, patch)
+}
+
+/** Plain navigation (not a fetch) so the browser handles the download --
+ * same pattern as the Library/Pipeline CSV exports. */
+export function exportCampaignCsvUrl(id: number): string {
+  return `${API_BASE_URL}/campaigns/${id}/export`
 }
 
 /** Move semantics, not copy: the schools leave the pipeline in the same

@@ -181,6 +181,59 @@ def test_clear_pipeline_keeps_campaigns_and_their_move_records(session):
     assert moved_records == 1
 
 
+def test_rename_and_description_edit(session):
+    from levelup.api.v1.campaigns import update_campaign
+    from levelup.api.v1.schemas import CampaignUpdate
+
+    out = update_campaign(1, CampaignUpdate(name="October wave", description="  template B  "), session)
+    assert out.name == "October wave"
+    assert out.description == "template B"  # stored trimmed
+
+    # Sending only one field leaves the other untouched...
+    out = update_campaign(1, CampaignUpdate(description="template C"), session)
+    assert out.name == "October wave" and out.description == "template C"
+    # ...and an explicit empty string clears the description.
+    out = update_campaign(1, CampaignUpdate(description=""), session)
+    assert out.description is None
+
+
+def test_rename_to_a_taken_name_is_rejected(session):
+    import pytest as _pytest
+    from fastapi import HTTPException
+    from levelup.api.v1.campaigns import update_campaign
+    from levelup.api.v1.schemas import CampaignUpdate
+
+    with _pytest.raises(HTTPException) as exc:
+        update_campaign(1, CampaignUpdate(name="old batch"), session)  # case-insensitive clash with "Old batch"
+    assert exc.value.status_code == 409
+    # A no-op rename to its OWN name is fine (the exclusion clause).
+    assert update_campaign(1, CampaignUpdate(name="September mailing"), session).name == "September mailing"
+
+
+def test_export_csv_carries_the_container_facts(session):
+    from levelup.api.v1.campaigns import export_campaign_csv
+    from levelup.models.enrichment import SchoolContact
+
+    # Give school 1 a teacher email so best_email priority is observable.
+    session.add(
+        SchoolContact(
+            school_id=1, contact_type="english_coordinator", person_name="Jan Kos", email="jan.kos@sp1.pl"
+        )
+    )
+    session.commit()
+    move_to_campaign(session, campaign(session), [1], actor_id=1)
+
+    response = export_campaign_csv(1, session)
+    body = response.body.decode("utf-8")
+    header, row = body.strip().splitlines()[:2]
+
+    assert "best_email" in header and "stage_when_moved" in header and "added_to_campaign" in header
+    assert "school-1" in row
+    assert "jan.kos@sp1.pl" in row  # teacher's own address wins over the general mailbox
+    assert "contacted" in row  # the snapshotted stage
+    assert response.headers["content-disposition"].startswith("attachment")
+
+
 def test_full_reset_clears_campaigns(session):
     move_to_campaign(session, campaign(session), [1], actor_id=1)
 

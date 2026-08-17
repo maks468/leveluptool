@@ -5,7 +5,11 @@ Campaign model docstring for the one-place invariant this enforces).
 
 from __future__ import annotations
 
+import csv
+import io
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
@@ -14,6 +18,7 @@ from levelup.api.v1.schemas import (
     CampaignDetailOut,
     CampaignOut,
     CampaignSchoolOut,
+    CampaignUpdate,
     MoveToCampaignRequest,
     MoveToCampaignResult,
 )
@@ -22,6 +27,7 @@ from levelup.core.security import get_current_user
 from levelup.models.campaign import Campaign, CampaignSchool
 from levelup.models.score import CurrentScore, SchoolScore
 from levelup.models.user import User
+from levelup.api.v1.schools import _compute_best_emails
 from levelup.services.pipeline.campaigns import (
     move_to_campaign,
     return_all_to_pipeline,
@@ -33,8 +39,27 @@ router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
 def _campaign_out(campaign: Campaign, school_count: int) -> CampaignOut:
     return CampaignOut(
-        id=campaign.id, name=campaign.name, created_at=campaign.created_at, school_count=school_count
+        id=campaign.id,
+        name=campaign.name,
+        description=campaign.description,
+        created_at=campaign.created_at,
+        school_count=school_count,
     )
+
+
+def _get_campaign_or_404(session: Session, campaign_id: int) -> Campaign:
+    campaign = session.query(Campaign).filter_by(id=campaign_id).one_or_none()
+    if campaign is None:
+        raise HTTPException(404, "Campaign not found")
+    return campaign
+
+
+def _assert_name_free(session: Session, name: str, exclude_id: int | None = None) -> None:
+    query = session.query(Campaign).filter(func.lower(Campaign.name) == name.lower())
+    if exclude_id is not None:
+        query = query.filter(Campaign.id != exclude_id)
+    if query.one_or_none():
+        raise HTTPException(409, f'A campaign named "{name}" already exists')
 
 
 @router.post("", response_model=CampaignOut, status_code=201)
@@ -46,12 +71,33 @@ def create_campaign(
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "Campaign name must not be empty")
-    if session.query(Campaign).filter(func.lower(Campaign.name) == name.lower()).one_or_none():
-        raise HTTPException(409, f'A campaign named "{name}" already exists')
-    campaign = Campaign(name=name, owner_id=user.id)
+    _assert_name_free(session, name)
+    campaign = Campaign(name=name, description=(body.description or "").strip() or None, owner_id=user.id)
     session.add(campaign)
     session.commit()
     return _campaign_out(campaign, school_count=0)
+
+
+@router.patch("/{campaign_id}", response_model=CampaignOut)
+def update_campaign(
+    campaign_id: int,
+    body: CampaignUpdate,
+    session: Session = Depends(get_session),
+):
+    """Rename and/or edit the description. The membership list is not
+    touched here -- moving schools stays its own explicit action."""
+    campaign = _get_campaign_or_404(session, campaign_id)
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, "Campaign name must not be empty")
+        _assert_name_free(session, name, exclude_id=campaign.id)
+        campaign.name = name
+    if body.description is not None:
+        campaign.description = body.description.strip() or None
+    session.commit()
+    school_count = session.query(CampaignSchool).filter_by(campaign_id=campaign.id).count()
+    return _campaign_out(campaign, school_count)
 
 
 @router.get("", response_model=list[CampaignOut])
@@ -103,9 +149,67 @@ def get_campaign(campaign_id: int, session: Session = Depends(get_session)):
     return CampaignDetailOut(
         id=campaign.id,
         name=campaign.name,
+        description=campaign.description,
         created_at=campaign.created_at,
         school_count=len(schools),
         schools=schools,
+    )
+
+
+@router.get("/{campaign_id}/export")
+def export_campaign_csv(campaign_id: int, session: Session = Depends(get_session)):
+    """CSV of the campaign's schools -- same hand-to-an-email-tool use case
+    as the Library/Pipeline exports, plus the two facts the container owns
+    (stage when moved, when it was added). best_email follows the standing
+    priority: teacher's own address > director's > office."""
+    campaign = _get_campaign_or_404(session, campaign_id)
+    memberships = (
+        session.query(CampaignSchool)
+        .options(joinedload(CampaignSchool.school))
+        .filter(CampaignSchool.campaign_id == campaign.id)
+        .order_by(CampaignSchool.added_at.desc(), CampaignSchool.id.desc())
+        .all()
+    )
+    scores = dict(
+        session.query(CurrentScore.school_id, SchoolScore.total_score)
+        .join(SchoolScore, SchoolScore.id == CurrentScore.score_id)
+        .filter(CurrentScore.school_id.in_([m.school_id for m in memberships]))
+        .all()
+    )
+    best_emails = _compute_best_emails(session, [m.school_id for m in memberships])
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "rspo_id", "name", "level", "voivodeship", "city", "website_url", "director_name",
+            "english_teacher_name", "best_email", "score", "stage_when_moved", "added_to_campaign",
+        ]
+    )
+    for m in memberships:
+        school = m.school
+        writer.writerow(
+            [
+                school.rspo_id,
+                school.name,
+                school.level.value,
+                school.voivodeship or "",
+                school.city or "",
+                school.website_url or "",
+                school.director_name or "",
+                school.english_teacher_name or "",
+                best_emails.get(m.school_id) or "",
+                scores.get(m.school_id) if scores.get(m.school_id) is not None else "",
+                m.stage_at_move,
+                m.added_at,
+            ]
+        )
+
+    safe_name = "".join(ch if ch.isalnum() or ch in "-_ " else "_" for ch in campaign.name).strip().replace(" ", "_")
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=campaign_{safe_name or campaign.id}.csv"},
     )
 
 

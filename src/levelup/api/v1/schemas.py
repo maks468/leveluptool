@@ -310,6 +310,15 @@ class ResetResultOut(BaseModel):
 
 class CampaignCreate(BaseModel):
     name: str
+    description: str | None = None
+
+
+class CampaignUpdate(BaseModel):
+    """Both optional -- send only what changes. An explicit empty string
+    clears the description; name can never be cleared, only replaced."""
+
+    name: str | None = None
+    description: str | None = None
 
 
 class CampaignOut(BaseModel):
@@ -317,6 +326,7 @@ class CampaignOut(BaseModel):
 
     id: int
     name: str
+    description: str | None = None
     created_at: datetime
     school_count: int
 

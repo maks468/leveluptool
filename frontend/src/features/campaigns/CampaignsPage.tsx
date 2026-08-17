@@ -1,13 +1,15 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Archive, Plus, Trash2, Undo2 } from "lucide-react"
+import { Archive, Download, Pencil, Plus, Trash2, Undo2 } from "lucide-react"
 import {
   createCampaign,
   deleteCampaign,
+  exportCampaignCsvUrl,
   getCampaign,
   listCampaigns,
   returnAllToPipeline,
   returnSchoolToPipeline,
+  updateCampaign,
 } from "@/api/campaigns"
 import { queryKeys } from "@/api/queryKeys"
 import { Button } from "@/components/ui/Button"
@@ -32,6 +34,9 @@ export function CampaignsPage() {
   const [selectedCampaignId, setSelectedCampaignId] = useState<number | null>(null)
   const [newName, setNewName] = useState("")
   const [selectedSchoolId, setSelectedSchoolId] = useState<number | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [editName, setEditName] = useState("")
+  const [editDescription, setEditDescription] = useState("")
   const queryClient = useQueryClient()
 
   const { data: campaigns = [], isLoading } = useQuery({
@@ -65,6 +70,24 @@ export function CampaignsPage() {
       queryClient.invalidateQueries({ queryKey: ["dashboard-summary"] })
     },
   })
+
+  const updateMutation = useMutation({
+    mutationFn: () =>
+      updateCampaign(activeCampaignId as number, { name: editName.trim(), description: editDescription.trim() }),
+    onSuccess: () => {
+      setEditing(false)
+      queryClient.invalidateQueries({ queryKey: queryKeys.campaigns() })
+      queryClient.invalidateQueries({ queryKey: ["campaign"] })
+      queryClient.invalidateQueries({ queryKey: ["schools"] })  // Library badges show the campaign name
+    },
+  })
+
+  function startEditing() {
+    if (!detail) return
+    setEditName(detail.name)
+    setEditDescription(detail.description ?? "")
+    setEditing(true)
+  }
 
   const returnAllMutation = useMutation({
     mutationFn: (campaignId: number) => returnAllToPipeline(campaignId),
@@ -156,15 +179,76 @@ export function CampaignsPage() {
           <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)]">
             {detail && (
               <>
-                <div className="flex items-center justify-between border-b border-[var(--color-border)] px-4 py-3">
-                  <div>
-                    <h2 className="text-sm font-semibold">{detail.name}</h2>
-                    <span className="text-xs text-[var(--color-text-muted)]">
-                      {detail.school_count.toLocaleString()} school{detail.school_count === 1 ? "" : "s"} &middot;
-                      created {formatDate(detail.created_at)}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
+                <div className="flex items-start justify-between gap-3 border-b border-[var(--color-border)] px-4 py-3">
+                  {editing ? (
+                    <div className="flex-1 space-y-2">
+                      <input
+                        type="text"
+                        autoFocus
+                        className="w-full max-w-md rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm font-semibold"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                      />
+                      <textarea
+                        placeholder="Description — what is this batch? (optional)"
+                        rows={2}
+                        className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
+                        value={editDescription}
+                        onChange={(e) => setEditDescription(e.target.value)}
+                      />
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          disabled={!editName.trim() || updateMutation.isPending}
+                          onClick={() => updateMutation.mutate()}
+                        >
+                          {updateMutation.isPending ? "Saving…" : "Save"}
+                        </Button>
+                        <Button size="sm" variant="secondary" onClick={() => setEditing(false)}>
+                          Cancel
+                        </Button>
+                        {updateMutation.isError && (
+                          <span className="text-xs text-red-600">
+                            Couldn&rsquo;t save &mdash; is that name already taken?
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <h2 className="truncate text-sm font-semibold">{detail.name}</h2>
+                        <button
+                          type="button"
+                          title="Rename or edit the description"
+                          className="rounded p-0.5 text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                          onClick={startEditing}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      {detail.description && (
+                        <p className="mt-0.5 max-w-xl whitespace-pre-wrap text-xs text-[var(--color-text)]">
+                          {detail.description}
+                        </p>
+                      )}
+                      <span className="text-xs text-[var(--color-text-muted)]">
+                        {detail.school_count.toLocaleString()} school{detail.school_count === 1 ? "" : "s"} &middot;
+                        created {formatDate(detail.created_at)}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex flex-shrink-0 items-center gap-2">
+                  <a
+                    href={exportCampaignCsvUrl(detail.id)}
+                    download
+                    title="Download this campaign's schools as CSV (includes best email, stage when moved, date added)"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm font-medium text-[var(--color-text)] transition-colors hover:bg-slate-50 dark:hover:bg-slate-800"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    Export CSV
+                  </a>
                   <Button
                     variant="secondary"
                     size="sm"

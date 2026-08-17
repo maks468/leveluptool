@@ -357,6 +357,8 @@ export interface Tag {
 export interface Campaign {
   id: number
   name: string
+  /** Free-form note about what this batch is ("wysyłka wrzesień, template B"). */
+  description: string | null
   created_at: string
   school_count: number
 }
