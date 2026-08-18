@@ -353,9 +353,20 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
     # so a school whose only old email was e.g.
     # "inspektor@coreconsulting.pl" would otherwise keep it
     # forever. Re-enriching should clean that up.
+    retired_any = False
     for stale in session.query(SchoolContact).filter_by(school_id=school.id).all():
         if is_non_school_email(stale.email):
             session.delete(stale)
+            retired_any = True
+    # BUG FIX: the session runs autoflush=False, so without an explicit
+    # flush the pending delete is invisible to _upsert_contact's own
+    # existing-row query below -- the upsert then "updates" the doomed row
+    # and the commit executes the delete last, destroying the fresh
+    # contact with it. Confirmed directly: retiring SP 190's leaked IOD
+    # address silently ate the same run's newly-found sekretariat email,
+    # leaving the school with no general contact at all.
+    if retired_any:
+        session.flush()
 
     # RSPO's own detail API is authoritative and official -- try it
     # FIRST, before any website scraping. It never has the English

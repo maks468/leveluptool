@@ -13,6 +13,16 @@
    email already in hand.
 """
 
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+import levelup.models  # noqa: F401 -- registers every table on Base.metadata
+from levelup.core.db import Base
+from levelup.models.enrichment import SchoolContact
+from levelup.models.school import School, SchoolLevel
+from levelup.models.user import User
+from levelup.services.enrichment.jobs import _upsert_contact
 from levelup.services.enrichment.verifier import (
     classify_contact_quality,
     is_data_protection_email,
@@ -45,6 +55,38 @@ def test_concatenated_initial_plus_surname_is_personal():
     assert is_personal_email_for("annakowalska@szkola.pl", "Anna Kowalska")
     assert is_personal_email_for("kowalskaa@szkola.pl", "Anna Kowalska")  # surname+initial
     assert classify_contact_quality("Ewa Miecznikowska", "EMiecznikowska@eduwarszawa.pl") == "verified"
+
+
+def test_retiring_a_condemned_contact_must_not_eat_its_replacement():
+    """The SP 190 second-order failure: with autoflush off, deleting the
+    condemned row and upserting its replacement into the same slot in one
+    session made the upsert 'update' the doomed row -- the commit then ran
+    the delete last and destroyed the fresh contact. The production path
+    now flushes between retire and upsert; this reproduces the exact
+    sequence and pins the surviving row."""
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
+    session.add(User(id=1, display_name="Owner", email=None))
+    session.add(School(id=1, rspo_id="1", name="SP 190", level=SchoolLevel.PRIMARY, raw_import_row={}))
+    session.add(SchoolContact(school_id=1, contact_type="general", email="rzarzeczna.iod@dbfomokotow.pl"))
+    session.commit()
+
+    # The production sequence: retire (delete) ...
+    for stale in session.query(SchoolContact).filter_by(school_id=1).all():
+        if is_non_school_email(stale.email):
+            session.delete(stale)
+    session.flush()  # ... the fix under test ...
+    # ... then upsert the replacement into the same slot.
+    _upsert_contact(
+        session, school_id=1, contact_type="general", person_name=None,
+        email="sp190@eduwarszawa.pl", phone=None, source_url="http://www.sp190.waw.pl",
+        job_id=None, quality="failed",
+    )
+    session.commit()
+
+    rows = session.query(SchoolContact).filter_by(school_id=1, contact_type="general").all()
+    assert [r.email for r in rows] == ["sp190@eduwarszawa.pl"]
 
 
 def test_concatenated_form_still_rejects_everyone_else():
