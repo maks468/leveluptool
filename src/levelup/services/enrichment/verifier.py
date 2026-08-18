@@ -245,8 +245,14 @@ def campaign_email_tier(email: str | None) -> int:
 # section code. Returns a level key aligned with SchoolLevel values, or
 # None when no level is implied (an ordinary office/personal address).
 _EMAIL_LEVEL_HINTS = (
-    ("primary", re.compile(r"^p?sp[-_]?\d*$")),
-    ("liceum", re.compile(r"^(x?lo|liceum)[-_]?\d*$")),
+    # p?s?sp: sp / psp (publiczna) / ssp (społeczna) / nsp handled below --
+    # confirmed directly: "ssp11@slosto.biaman.pl" (Społeczna SP nr 11's own
+    # box on a domain shared with its sister liceum) carried no hint at all,
+    # so the shared complex box won the general-email pick over the school's
+    # own address.
+    ("primary", re.compile(r"^[pns]?s?sp[-_]?\d*$")),
+    # Optional leading ordinal and społeczne/x prefix: 1slo, 2lo, slo, xlo.
+    ("liceum", re.compile(r"^\d{0,2}[-_]?(x?s?lo|liceum)[-_]?\d*$")),
     ("technikum", re.compile(r"^(technikum|tech)[-_]?\d*$")),
 )
 

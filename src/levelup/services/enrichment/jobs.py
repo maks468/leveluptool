@@ -223,6 +223,52 @@ def _run_llm_extraction(result: dict, school: School, still_needed_roles: set[st
 # metadata (staff_roster_urls) for a human to check manually instead.
 
 
+_SCHOOL_NR_RE = re.compile(r"\bnr\.?\s*(\d+)\b", re.IGNORECASE)
+
+
+def pick_general_email(
+    candidates: list[str], school_level: str, school_name: str, rspo_email: str | None
+) -> str | None:
+    """The school's general office box, chosen from every unclaimed
+    candidate. Preference order per criterion (lower wins):
+
+    1. Level agreement of the address's own code with THIS school:
+       an exact level match (ssp11@ for a Społeczna SP) beats a neutral
+       address, which beats a code for a SIBLING level (1slo@ for that
+       same SP). Confirmed directly: SSP nr 11 w Białymstoku's own
+       ssp11@slosto.biaman.pl lost to the complex-shared slosto@ box
+       because neither carried a recognized level code, and RSPO (which
+       registers the shared box for every school in the complex) won the
+       tie.
+    2. A number embedded in the local part that CONTRADICTS the school's
+       own number is demoted outright -- sp84@ can never win for school
+       nr 350, even if it leaks onto a shared page.
+    3. campaign_email_tier: office > unlabelled > recruitment-only.
+    4. RSPO's registered address wins remaining ties as the authoritative
+       source."""
+    if not candidates:
+        return None
+    name_match = _SCHOOL_NR_RE.search(school_name or "")
+    school_number = name_match.group(1) if name_match else None
+
+    def rank(email: str) -> tuple[int, int, int, int]:
+        hint = email_level_hint(email)
+        if hint == school_level:
+            level_pref = 0
+        elif hint is None:
+            level_pref = 1
+        else:
+            level_pref = 2
+        local_digits = re.findall(r"\d+", email.split("@")[0])
+        number_conflict = 1 if (
+            school_number and local_digits and school_number not in {d.lstrip("0") or d for d in local_digits}
+        ) else 0
+        rspo_tiebreak = 0 if email == rspo_email else 1
+        return (number_conflict, level_pref, campaign_email_tier(email), rspo_tiebreak)
+
+    return min(candidates, key=rank)
+
+
 def _upsert_contact(
     session,
     *,
@@ -646,14 +692,7 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
     # authoritative source. Personal addresses are already claimed
     # above, so this slot is always the general office contact.
     rspo_email = rspo_info.get("email")
-
-    def _general_rank(email: str) -> tuple[int, int, int]:
-        hint = email_level_hint(email)
-        level_mismatch = 1 if (hint is not None and hint != school_level) else 0
-        rspo_tiebreak = 0 if email == rspo_email else 1
-        return (level_mismatch, campaign_email_tier(email), rspo_tiebreak)
-
-    general_email = min(unclaimed, key=_general_rank) if unclaimed else None
+    general_email = pick_general_email(unclaimed, school_level, school.name, rspo_email)
 
     if director_name:
         _upsert_contact(
