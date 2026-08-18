@@ -107,11 +107,32 @@ def test_titles_are_stripped():
     assert cols("dr hab. Piotr Nowak")["first_name"] == "Piotr"
 
 
-def test_foreign_and_unparseable_names_degrade_to_role():
-    for name in ("Bronwen Hughes", "Graham Smith", "Baranowska-Piasek", "Fiedorowicz"):
+def test_known_foreign_names_get_pan_pani_with_the_name_frozen():
+    """The user's rule for foreign names: establish gender, decline ONLY
+    Pan/Pani, leave the name untouched -- standard Polish treatment."""
+    kirk = cols("Kirk Palmer")
+    assert kirk["ref_quality"] == "undeclined"
+    assert kirk["gender"] == "male"
+    assert kirk["ref_inst"] == "Panem Kirk Palmer"
+    assert kirk["ref_gen"] == "Pana Kirk Palmer"
+    assert kirk["salutation"] == "Szanowny Panie,"
+    assert kirk["subject_ref"] == "dla Pana Palmer"
+
+    bronwen = cols("Bronwen Hughes")
+    assert bronwen["ref_quality"] == "undeclined"
+    assert bronwen["ref_inst"] == "Panią Bronwen Hughes"
+    assert bronwen["salutation"] == "Szanowna Pani,"
+
+    # Single foreign token still works.
+    assert cols("Christopher")["ref_inst"] == "Panem Christopher"
+
+
+def test_ambiguous_or_unparseable_names_still_degrade_to_role():
+    # "Bienn" isn't in any table -- gender stays unknown, never guessed.
+    for name in ("Bienn Marie Bautista", "Baranowska-Piasek", "Fiedorowicz"):
         c = cols(name)
         assert c["ref_quality"] == "role_only", name
-        assert c["gender"] == "", name  # never guessed
+        assert c["gender"] == "", name
 
 
 def test_surname_first_ordering_is_swapped_on_positive_proof():
@@ -137,9 +158,10 @@ def test_single_token_known_first_name():
     assert c["subject_ref"] == "dla Pani Agaty"
 
 
-def test_unknown_male_name_outside_table_degrades():
-    c = cols("Dmytro Kovalenko")  # Ukrainian: not in the Polish male table
-    assert c["ref_quality"] == "role_only"
+def test_ukrainian_name_in_foreign_table_goes_undeclined():
+    c = cols("Dmytro Kovalenko")
+    assert c["ref_quality"] == "undeclined"
+    assert c["ref_dat"] == "Panu Dmytro Kovalenko"
 
 
 def test_csv_helpers_stay_aligned():

@@ -15,6 +15,10 @@ guessing:
     first_name_only -- Pan/Pani + first name declined; surname frozen in
                        nominative (common and acceptable in official mail)
                        -- also used when there is no surname at all
+    undeclined      -- gender IS known (curated foreign-name table, or a
+                       female -a name whose declension isn't safe) but the
+                       name itself stays frozen: "z Panem Kirk Palmer" --
+                       standard Polish treatment of foreign names
     role_only       -- no usable name: role phrases ("z nauczycielem
                        języka angielskiego", "z Panią Dyrektor",
                        "z dyrekcją szkoły")
@@ -174,6 +178,29 @@ _MALE_FIRST = {
 # the "-a means female" rule can never misfire on the classics).
 _MALE_A_NAMES = {"Kuba", "Barnaba", "Kosma", "Bonawentura", "Dyzma", "Jarema"}
 
+# Foreign first names with unambiguous gender -- these get Pan/Pani with
+# the NAME LEFT ENTIRELY UNDECLINED ("z Panem Kirk Palmer"), the standard
+# Polish treatment of foreign names. Curated conservatively: a name that
+# could go either way (Bienn, Sam, Alex, Robin) does NOT belong here --
+# unknown degrades to role phrases, which beats a misgendered email.
+# Seeded from names actually observed in the database plus common
+# English/Ukrainian/Arabic stock.
+_FOREIGN_MALE = {
+    "Kirk", "Benjamin", "Christopher", "Graham", "Andrew", "Eric", "Dan",
+    "Daniel", "David", "James", "John", "Michael", "Peter", "Paul", "Mark",
+    "Thomas", "Steven", "Kevin", "Brian", "Ian", "Oliver", "Liam", "Jack",
+    "Harry", "George", "William", "Richard", "Matthew", "Alexander",
+    "Dmytro", "Oleh", "Oleksandr", "Serhii", "Andrii", "Volodymyr", "Ihor",
+    "Vasyl", "Taras", "Mahfoudh", "Mohammed", "Muhammad", "Ahmed", "Ali",
+    "Omar", "Youssef", "Hassan",
+}
+_FOREIGN_FEMALE = {
+    "Angelique", "Bronwen", "Jennifer", "Jessica", "Sarah", "Emily",
+    "Sophie", "Kate", "Mary", "Elizabeth", "Nicole", "Charlotte", "Marie",
+    "Ruth", "Ingrid", "Carmen", "Rachel", "Hannah", "Megan", "Chloe",
+    "Catherine", "Margaret", "Helen",
+}
+
 # Consonant alternations for the dative/locative -e ending (softening).
 # Ordered longest-first so digraphs win. Shared by female first names and
 # noun-declining surnames; a stem whose final consonant is NOT here can't
@@ -240,6 +267,10 @@ def _first_name_forms(name: str) -> tuple[str | None, tuple | None]:
         return "male", _MALE_FIRST[canonical]
     if canonical in _MALE_A_NAMES:
         return "male", None  # declinable like -a nouns, but rare: stay safe
+    if canonical in _FOREIGN_MALE:
+        return "male", None  # gender known, name deliberately left frozen
+    if canonical in _FOREIGN_FEMALE:
+        return "female", None
     if canonical.endswith("a") and len(canonical) >= 3 and not _SURNAME_SHAPED_RE.search(canonical):
         return "female", _decline_female_first(canonical)
     return None, None
@@ -415,6 +446,16 @@ def person_csv_columns(full_name: str | None, role: str) -> dict[str, str]:
         tail = f" {last}" if last else ""  # surname frozen in nominative
         refs = [f"{pan[i]} {first_forms[i]}{tail}" for i in range(5)]
         subject_ref = f"dla {pan[0]} {first_forms[0]}"
+    elif gender:
+        # Gender is known but the name can't be safely declined (foreign
+        # name from the curated table, or a female -a name with an
+        # unsoftenable stem): decline ONLY Pan/Pani and freeze the whole
+        # name -- "z Panem Kirk Palmer" -- the standard Polish treatment
+        # of foreign names.
+        quality = "undeclined"
+        frozen = f"{first} {last}".strip()
+        refs = [f"{pan[i]} {frozen}" for i in range(5)]
+        subject_ref = f"dla {pan[0]} {last or first}"
     else:
         quality = "role_only"
         role_forms = _ROLE_PHRASES[(role, gender if (role, gender) in _ROLE_PHRASES else None)]
