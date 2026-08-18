@@ -24,14 +24,28 @@ def is_personal_email_for(email: str | None, person_name: str | None) -> bool:
         return False
     local = email.split("@", 1)[0]
     tokens = [t for t in re.split(r"[._-]", local) if t]
-    if len(tokens) < 2:
-        return False
 
     name_words = [w for w in re.split(r"[\s-]+", person_name) if w]
     if len(name_words) < 2:
         return False
     first_name = _strip_diacritics(name_words[0])
     last_name = _strip_diacritics(name_words[-1])
+
+    if len(tokens) < 2:
+        # A single unseparated token is still positive structural proof in
+        # exactly one shape: THIS person's initial+surname or first+surname
+        # concatenated ("EMiecznikowska", "annakowalska") -- an extremely
+        # common Polish school format that the separator-split rule above
+        # can't see (confirmed directly: the SP 350 director's own
+        # "EMiecznikowska@eduwarszawa.pl" sat unattached as a nameless
+        # general contact while the school graded partial). Full-surname
+        # equality is required (never a prefix/substring), the surname must
+        # be non-trivial, and anything else single-token stays unverifiable
+        # exactly as before -- "atut@fem.org.pl" still can't pass.
+        if len(tokens) == 1 and len(last_name) >= 4:
+            token = _strip_diacritics(tokens[0])
+            return token in (first_name[0] + last_name, first_name + last_name, last_name + first_name[0])
+        return False
     norm_tokens = [_strip_diacritics(t) for t in tokens]
 
     def matches(token: str, name: str) -> bool:
@@ -128,8 +142,19 @@ DATA_PROTECTION_LOCAL_PARTS = (
 def is_data_protection_email(email: str | None) -> bool:
     if not email:
         return False
-    local_norm = re.sub(r"[._+-]", "", email.split("@")[0].lower())
-    return any(local_norm == p or local_norm.startswith(p) for p in DATA_PROTECTION_LOCAL_PARTS)
+    local = email.split("@")[0].lower()
+    local_norm = re.sub(r"[._+-]", "", local)
+    if any(local_norm == p or local_norm.startswith(p) for p in DATA_PROTECTION_LOCAL_PARTS):
+        return True
+    # BUG FIX: the prefix check alone let a data-protection address through
+    # whenever the marker sits at the END -- confirmed directly:
+    # "rzarzeczna.iod@dbfomokotow.pl" (a named IOD at the district education
+    # bureau, not the school) was stored as a school's general contact and
+    # exported for outreach. Any separator-delimited token that IS a
+    # protection marker damns the address -- token equality, not substring,
+    # so a surname merely containing "iod"/"abi" can never false-positive.
+    tokens = [t for t in re.split(r"[._+-]", local) if t]
+    return any(t in ("iod", "rodo", "abi", "dpo", "gdpr", "inspektor") for t in tokens)
 
 
 # Known third-party compliance / IT / legal firms schools outsource RODO or
