@@ -110,6 +110,20 @@ _MALE_FIRST = {
     "Jacek": ("Jacka", "Jackowi", "Jacka", "Jackiem", "Jacku", "Jacku"),
     "Jakub": ("Jakuba", "Jakubowi", "Jakuba", "Jakubem", "Jakubie", "Jakubie"),
     "Jan": ("Jana", "Janowi", "Jana", "Janem", "Janie", "Janie"),
+    "Kacper": ("Kacpra", "Kacprowi", "Kacpra", "Kacprem", "Kacprze", "Kacprze"),
+    "Mikołaj": ("Mikołaja", "Mikołajowi", "Mikołaja", "Mikołajem", "Mikołaju", "Mikołaju"),
+    "Oskar": ("Oskara", "Oskarowi", "Oskara", "Oskarem", "Oskarze", "Oskarze"),
+    "Igor": ("Igora", "Igorowi", "Igora", "Igorem", "Igorze", "Igorze"),
+    "Eryk": ("Eryka", "Erykowi", "Eryka", "Erykiem", "Eryku", "Eryku"),
+    "Wiktor": ("Wiktora", "Wiktorowi", "Wiktora", "Wiktorem", "Wiktorze", "Wiktorze"),
+    "Miłosz": ("Miłosza", "Miłoszowi", "Miłosza", "Miłoszem", "Miłoszu", "Miłoszu"),
+    "Julian": ("Juliana", "Julianowi", "Juliana", "Julianem", "Julianie", "Julianie"),
+    "Leon": ("Leona", "Leonowi", "Leona", "Leonem", "Leonie", "Leonie"),
+    "Borys": ("Borysa", "Borysowi", "Borysa", "Borysem", "Borysie", "Borysie"),
+    "Tymoteusz": ("Tymoteusza", "Tymoteuszowi", "Tymoteusza", "Tymoteuszem", "Tymoteuszu", "Tymoteuszu"),
+    "Kajetan": ("Kajetana", "Kajetanowi", "Kajetana", "Kajetanem", "Kajetanie", "Kajetanie"),
+    "Fabian": ("Fabiana", "Fabianowi", "Fabiana", "Fabianem", "Fabianie", "Fabianie"),
+    "Ksawery": ("Ksawerego", "Ksaweremu", "Ksawerego", "Ksawerym", "Ksawerym", "Ksawery"),
     "Janusz": ("Janusza", "Januszowi", "Janusza", "Januszem", "Januszu", "Januszu"),
     "Jarosław": ("Jarosława", "Jarosławowi", "Jarosława", "Jarosławem", "Jarosławie", "Jarosławie"),
     "Jerzy": ("Jerzego", "Jerzemu", "Jerzego", "Jerzym", "Jerzym", "Jerzy"),
@@ -369,6 +383,17 @@ def person_csv_columns(full_name: str | None, role: str) -> dict[str, str]:
     "director". Never raises, never guesses: every uncertainty lands on
     the documented degradation ladder."""
     parts = _clean(full_name or "")
+    # Surname-first ordering ("Grochowalska Agnieszka") -- seen in real
+    # scraped data. Swapped only on positive proof BOTH ways: the first
+    # token is surname-shaped AND the last token is a name the gender
+    # logic actually recognizes, so "Baranowska-Piasek" alone or two
+    # ambiguous tokens still degrade instead of guessing.
+    if (
+        len(parts) == 2
+        and _SURNAME_SHAPED_RE.search(parts[0])
+        and _first_name_forms(parts[1])[0] is not None
+    ):
+        parts = [parts[1], parts[0]]
     gender: str | None = None
     first = last = ""
     first_forms = surname_forms = None

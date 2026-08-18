@@ -114,6 +114,22 @@ def test_foreign_and_unparseable_names_degrade_to_role():
         assert c["gender"] == "", name  # never guessed
 
 
+def test_surname_first_ordering_is_swapped_on_positive_proof():
+    """"Grochowalska Agnieszka" (real scraped shape) must resolve as
+    Agnieszka Grochowalska -- but only when the last token is a
+    recognized first name; two ambiguous tokens still degrade."""
+    c = cols("Grochowalska Agnieszka")
+    assert c["ref_quality"] == "full"
+    assert c["ref_inst"] == "Panią Agnieszką Grochowalską"
+    assert cols("Baranowska-Piasek")["ref_quality"] == "role_only"
+
+
+def test_modern_male_names_added_from_campaign_gaps():
+    assert cols("Mikołaj Rudnicki")["ref_dat"] == "Panu Mikołajowi Rudnickiemu"
+    assert cols("Kacper Kłosowicz")["ref_inst"] == "Panem Kacprem Kłosowiczem"
+    assert cols("Kacper Kłosowicz")["salutation"] == "Szanowny Panie Kacprze,"
+
+
 def test_single_token_known_first_name():
     c = cols("Agata")
     assert c["ref_quality"] == "first_name_only"
