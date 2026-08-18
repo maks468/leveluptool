@@ -25,6 +25,7 @@ from levelup.models.pipeline import ActivityLog, ActivityType, PipelineState
 from levelup.models.school import TARGET_SCHOOL_CONDITIONS, EvidenceSource, School
 from levelup.models.score import CurrentScore, SchoolScore
 from levelup.models.user import User
+from levelup.services import salutations
 from levelup.services.enrichment.verifier import (
     DATA_PROTECTION_LOCAL_PARTS,
     GENERIC_OFFICE_LOCAL_PARTS,
@@ -614,6 +615,12 @@ def export_schools_csv(
             "rspo_id", "name", "level", "voivodeship", "city", "is_private", "ownership_subtype",
             "student_count", "website_url", "director_name", "english_teacher_name", "score",
             "in_pipeline", "stage",
+            # Polish salutation/declension columns for outbound tooling --
+            # see services/salutations.py. Same trailing block on all three
+            # exports (library/pipeline/campaign) so templates are portable.
+            *salutations.csv_headers("teacher"),
+            *salutations.csv_headers("director"),
+            "secretariat_salutation",
         ]
     )
     for school in query.all():
@@ -640,6 +647,9 @@ def export_schools_csv(
                 score.total_score if score else "",
                 "yes" if pipeline_state else "no",
                 pipeline_state.stage.value if pipeline_state else "",
+                *salutations.csv_values(school.english_teacher_name, "teacher"),
+                *salutations.csv_values(school.director_name, "director"),
+                salutations.SECRETARIAT_SALUTATION,
             ]
         )
 

@@ -28,6 +28,7 @@ from levelup.models.campaign import Campaign, CampaignSchool
 from levelup.models.score import CurrentScore, SchoolScore
 from levelup.models.user import User
 from levelup.api.v1.schools import _compute_best_emails
+from levelup.services import salutations
 from levelup.services.pipeline.campaigns import (
     move_to_campaign,
     return_all_to_pipeline,
@@ -184,6 +185,9 @@ def export_campaign_csv(campaign_id: int, session: Session = Depends(get_session
         [
             "rspo_id", "name", "level", "voivodeship", "city", "website_url", "director_name",
             "english_teacher_name", "best_email", "score", "stage_when_moved", "added_to_campaign",
+            *salutations.csv_headers("teacher"),
+            *salutations.csv_headers("director"),
+            "secretariat_salutation",
         ]
     )
     for m in memberships:
@@ -202,6 +206,9 @@ def export_campaign_csv(campaign_id: int, session: Session = Depends(get_session
                 scores.get(m.school_id) if scores.get(m.school_id) is not None else "",
                 m.stage_at_move,
                 m.added_at,
+                *salutations.csv_values(school.english_teacher_name, "teacher"),
+                *salutations.csv_values(school.director_name, "director"),
+                salutations.SECRETARIAT_SALUTATION,
             ]
         )
 

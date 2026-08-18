@@ -40,6 +40,7 @@ from levelup.models.pipeline import ActivityLog, PipelineStage, PipelineState
 from levelup.models.school import School
 from levelup.models.score import CurrentScore, SchoolScore
 from levelup.models.user import User
+from levelup.services import salutations
 from levelup.services.pipeline.activity import log_activity
 from levelup.services.pipeline.geocoding import backfill_missing_coordinates
 from levelup.services.pipeline.stages import change_stage, pull_into_pipeline, remove_from_pipeline
@@ -402,6 +403,9 @@ def export_pipeline_csv(
             "rspo_id", "name", "level", "voivodeship", "city", "website_url", "director_name",
             "english_teacher_name", "best_email", "score", "stage", "students",
             "next_action_date", "stage_updated_at", "entered_pipeline_at", "added_via",
+            *salutations.csv_headers("teacher"),
+            *salutations.csv_headers("director"),
+            "secretariat_salutation",
         ]
     )
     for school, state in rows:
@@ -429,6 +433,9 @@ def export_pipeline_csv(
                 state.stage_updated_at,
                 state.entered_pipeline_at,
                 state.pull_criteria or "",
+                *salutations.csv_values(school.english_teacher_name, "teacher"),
+                *salutations.csv_values(school.director_name, "director"),
+                salutations.SECRETARIAT_SALUTATION,
             ]
         )
 
