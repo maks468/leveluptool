@@ -51,18 +51,10 @@ async def lifespan(app: FastAPI):
     start_auto_enrich_thread()
     yield
     stop_auto_enrich_thread()
-    # Flush every committed WAL frame into the main database file before
-    # this process exits. The DB lives on a Windows bind mount, where
-    # relying on the NEXT container to replay the WAL has twice silently
-    # reverted real, committed user data (a campaign container with 100
-    # schools; a finished job's 'done' status) -- the fresh process treated
-    # the carried-over WAL/-shm pair as invalid and fell back to the last
-    # checkpoint. An explicit TRUNCATE checkpoint at shutdown leaves
-    # nothing for the next start to replay, so a restart can't lose what
-    # was already committed.
-    with engine.connect() as conn:
-        conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
-        conn.commit()
+    # (A wal_checkpoint used to run here. Gone with WAL itself -- see
+    # core/db.py for why this database no longer uses WAL at all: in
+    # DELETE journal mode every commit is in the main file immediately,
+    # so there is nothing to flush and nothing a kill -9 can revert.)
 
 
 app = FastAPI(title="LevelUp Schools CRM", lifespan=lifespan)
