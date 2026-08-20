@@ -191,3 +191,99 @@ def test_vision_strips_malformed_email():
     )
     result = ground_vision_extraction(extraction, school_website_domain="real.pl")
     assert result.staff[0].email is None
+
+
+# --- ALL-CAPS staff pages (the Białe Błota failure) -------------------------
+# Polish school CMSs routinely render staff tables in caps. The model
+# normalizes the name to title case (what we want stored), so every
+# grounding check that compared exact case dropped the record silently.
+
+CAPS_URL = "https://spbb.pl/nauczyciele/"
+CAPS_PAGES = {
+    CAPS_URL: (
+        "NAUCZYCIELE\n"
+        "JĘZYK ANGIELSKI | ANNA BUJARKIEWICZ PAULINA GIERZYŃSKA STEFAN ŁAPNIEWSKI\n"
+        "DYREKTOR SZKOŁY RENATA KARWOWSKA | RENATA.KARWOWSKA@SPBB.PL"
+    ),
+}
+
+
+def test_all_caps_page_grounds_a_title_cased_name():
+    """The exact shape that failed: caps page, model-normalized name."""
+    extraction = ground_extraction(
+        SchoolExtraction(
+            staff=[
+                StaffRecord(
+                    name="Anna Bujarkiewicz",
+                    role="english_teacher",
+                    evidence="JĘZYK ANGIELSKI | ANNA BUJARKIEWICZ",
+                    source_url=CAPS_URL,
+                    confidence="high",
+                )
+            ]
+        ),
+        CAPS_PAGES,
+        school_name="Szkoła Podstawowa im. Mariana Rejewskiego w Białych Błotach",
+    )
+    assert [s.name for s in extraction.staff] == ["Anna Bujarkiewicz"]
+
+
+def test_all_caps_email_pairing_survives_case_normalization():
+    extraction = ground_extraction(
+        SchoolExtraction(
+            staff=[
+                StaffRecord(
+                    name="Renata Karwowska",
+                    role="director",
+                    evidence="DYREKTOR SZKOŁY RENATA KARWOWSKA",
+                    source_url=CAPS_URL,
+                    email="renata.karwowska@spbb.pl",
+                    email_evidence="RENATA KARWOWSKA | RENATA.KARWOWSKA@SPBB.PL",
+                    confidence="high",
+                )
+            ]
+        ),
+        CAPS_PAGES,
+        school_name="Szkoła Podstawowa im. Mariana Rejewskiego",
+    )
+    assert [(s.name, s.email) for s in extraction.staff] == [
+        ("Renata Karwowska", "renata.karwowska@spbb.pl")
+    ]
+
+
+def test_case_insensitivity_does_not_admit_fabrications():
+    """The gate still holds: a quote that isn't on the page in ANY casing,
+    and a role the quote doesn't state, are both still rejected."""
+    fabricated = ground_extraction(
+        SchoolExtraction(
+            staff=[
+                StaffRecord(
+                    name="Zbigniew Fikcyjny",
+                    role="english_teacher",
+                    evidence="JĘZYK ANGIELSKI | ZBIGNIEW FIKCYJNY",
+                    source_url=CAPS_URL,
+                    confidence="high",
+                )
+            ]
+        ),
+        CAPS_PAGES,
+        school_name="Szkoła",
+    )
+    assert fabricated.staff == []
+
+    wrong_role = ground_extraction(
+        SchoolExtraction(
+            staff=[
+                StaffRecord(
+                    name="Anna Bujarkiewicz",
+                    role="director",  # the quote proves English teaching, not directorship
+                    evidence="JĘZYK ANGIELSKI | ANNA BUJARKIEWICZ",
+                    source_url=CAPS_URL,
+                    confidence="high",
+                )
+            ]
+        ),
+        CAPS_PAGES,
+        school_name="Szkoła",
+    )
+    assert wrong_role.staff == []

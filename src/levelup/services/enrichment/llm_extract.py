@@ -419,6 +419,26 @@ def _validate_extraction(raw: dict) -> SchoolExtraction | None:
         return None
 
 
+def _contains(haystack: str, needle: str) -> bool:
+    """Case-insensitive containment -- used by every grounding check below.
+
+    BUG FIX: those checks compared exact case, and Polish school CMSs
+    routinely render staff tables in ALL CAPS ("JEZYK ANGIELSKI | ANNA
+    BUJARKIEWICZ PAULINA GIERZYNSKA ..."). The model returns the name
+    normalized to "Anna Bujarkiewicz" -- which is exactly what we want
+    stored, and what the salutation/declension layer needs -- so the
+    name-in-evidence and name-on-page checks both failed and EVERY staff
+    record on such a page was silently dropped. Confirmed directly: SP im.
+    Mariana Rejewskiego w Bialych Blotach lists five English teachers in
+    caps on its /nauczyciele/ page and came back with no teacher at all.
+
+    Case was never the anti-hallucination property here -- the presence of
+    the text on the cited page is. A fabricated quote still fails; only
+    casing differences now pass.
+    """
+    return needle.casefold() in haystack.casefold()
+
+
 def _name_variants(name: str) -> set[str]:
     """A name counts as grounded if the exact string appears on its own
     source page, OR its Last-First reversal does -- Polish staff tables
@@ -516,14 +536,14 @@ def ground_extraction(
             continue  # third-party pages never originate a person/role claim
         page_norm = _normalize_ws(page_text)
         evidence_norm = _normalize_ws(record.evidence)
-        if not evidence_norm or evidence_norm not in page_norm:
+        if not evidence_norm or not _contains(page_norm, evidence_norm):
             continue  # "evidence" must be an actual quote from the page, not a plausible-sounding paraphrase
         name_variants = {_normalize_ws(v) for v in _name_variants(record.name)}
-        if not any(variant in evidence_norm for variant in name_variants):
+        if not any(_contains(evidence_norm, variant) for variant in name_variants):
             continue  # the quote must be ABOUT this person, not merely coexist with them on the page
         if not _evidence_proves_role(evidence_norm.lower(), record.role):
             continue  # the quote must state the claimed role itself
-        if not any(variant in page_norm for variant in name_variants):
+        if not any(_contains(page_norm, variant) for variant in name_variants):
             continue  # name (or its reversal) doesn't literally appear on its own cited page
         if _is_patron_name(record.name, patron_tokens):
             continue  # the school's own namesake, never staff
@@ -534,11 +554,11 @@ def ground_extraction(
             email_evidence_norm = _normalize_ws(record.email_evidence or "")
             evidence_ok = (
                 bool(email_evidence_norm)
-                and email_evidence_norm in page_norm  # the pairing quote must itself be real page text
-                and surname in email_evidence_norm
-                and email in email_evidence_norm
+                and _contains(page_norm, email_evidence_norm)  # the pairing quote must itself be real page text
+                and _contains(email_evidence_norm, surname)
+                and _contains(email_evidence_norm, email)
             )
-            if email not in page_text or not EMAIL_RE.fullmatch(email) or not evidence_ok:
+            if not _contains(page_text, email) or not EMAIL_RE.fullmatch(email) or not evidence_ok:
                 newly_unattributed.append(email)
                 email = None
 
