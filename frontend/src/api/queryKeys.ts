@@ -16,6 +16,7 @@ export const queryKeys = {
   savedViews: (scope: SavedViewScope) => ["saved-views", scope] as const,
   tags: () => ["tags"] as const,
   campaigns: () => ["campaigns"] as const,
+  directory: (args: unknown) => ["directory", args] as const,
   campaign: (id: number) => ["campaign", id] as const,
   schoolTags: (schoolId: number) => ["school-tags", schoolId] as const,
   search: (q: string) => ["search", q] as const,

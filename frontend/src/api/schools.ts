@@ -1,5 +1,14 @@
 import { api } from "./client"
-import type { CityFacet, FacetScope, LibraryFilters, School, SchoolContact, SchoolListResponse, VoivodeshipFacet } from "@/types/domain"
+import type {
+  CityFacet,
+  DirectoryListResponse,
+  FacetScope,
+  LibraryFilters,
+  School,
+  SchoolContact,
+  SchoolListResponse,
+  VoivodeshipFacet,
+} from "@/types/domain"
 
 export function filtersToParams(filters: LibraryFilters): Record<string, string> {
   const params: Record<string, string> = {}
@@ -22,7 +31,6 @@ export function filtersToParams(filters: LibraryFilters): Record<string, string>
   if (filters.score_max !== null) params.score_max = String(filters.score_max)
   params.score_include_unscored = String(filters.score_include_unscored)
   params.enrichment = filters.enrichment
-  params.pipeline_status = filters.pipeline_status
   return params
 }
 
@@ -47,7 +55,6 @@ export function filtersToApiBody(filters: LibraryFilters): Record<string, unknow
   if (filters.score_max !== null) body.score_max = filters.score_max
   body.score_include_unscored = filters.score_include_unscored
   body.enrichment = filters.enrichment
-  body.pipeline_status = filters.pipeline_status
   return body
 }
 
@@ -91,6 +98,27 @@ export async function getSchoolContacts(id: number): Promise<SchoolContact[]> {
 
 export async function updateSchoolWebsite(id: number, websiteUrl: string): Promise<School> {
   return api.patch<School>(`/schools/${id}/website`, { website_url: websiteUrl })
+}
+
+export interface DirectoryQuery {
+  q?: string
+  status?: "all" | "available" | "pipeline" | "campaign"
+  campaignId?: number | null
+  sort?: string
+  page?: number
+  pageSize?: number
+}
+
+/** The full register with each school's assignment -- see the Directory tab. */
+export async function listDirectory(args: DirectoryQuery = {}): Promise<DirectoryListResponse> {
+  const params = new URLSearchParams()
+  if (args.q) params.set("q", args.q)
+  if (args.status && args.status !== "all") params.set("status", args.status)
+  if (args.campaignId !== null && args.campaignId !== undefined) params.set("campaign_id", String(args.campaignId))
+  if (args.sort) params.set("sort", args.sort)
+  params.set("page", String(args.page ?? 1))
+  params.set("page_size", String(args.pageSize ?? 50))
+  return api.get<DirectoryListResponse>(`/schools/directory?${params.toString()}`)
 }
 
 export async function listVoivodeships(scope: FacetScope = "library"): Promise<VoivodeshipFacet[]> {

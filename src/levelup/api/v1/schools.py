@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 
 from levelup.api.v1.schemas import (
     CityFacetOut,
+    DirectoryEntryOut,
+    DirectoryListOut,
     SchoolContactOut,
     SchoolListOut,
     SchoolOut,
@@ -72,13 +74,27 @@ def _apply_filters(
     include_adult_education: bool = True,  # deprecated -- accepted and ignored (see below)
     special_needs: str = "all",  # deprecated -- accepted and ignored (see below)
     enrichment: str = "all",
-    pipeline_status: str = "all",
+    pipeline_status: str = "all",  # deprecated -- accepted and ignored (see below)
 ):
     # include_adult_education / special_needs used to be filters; both
     # populations are now eliminated outright by TARGET_SCHOOL_CONDITIONS.
-    # The parameters stay accepted (and ignored) so saved views and pull
-    # payloads from before the change don't crash on an unexpected key.
+    # pipeline_status (in/out) used to be a filter too; the Library is now
+    # the available pool outright (below), so there is nothing left for
+    # "in" to mean here -- the full register with assignments lives on the
+    # /schools/directory endpoint instead. All three parameters stay
+    # accepted (and ignored) so saved views and pull payloads from before
+    # these changes don't crash on an unexpected key.
     query = query.filter(*TARGET_SCHOOL_CONDITIONS)
+
+    # The Library IS the available pool: a school in the pipeline or parked
+    # in a campaign is being worked and must not appear here at all -- not
+    # in the table, the counts, the facets, "select/enrich all matching",
+    # or the CSV export. Pulling schools depletes the Library; returning or
+    # removing them replenishes it.
+    query = query.filter(
+        not_(exists().where(PipelineState.school_id == School.id)),
+        not_(exists().where(CampaignSchool.school_id == School.id)),
+    )
 
     # What contact data enrichment has actually produced for a school --
     # "enriched"/"not_enriched" for the plain split, the three individual
@@ -88,14 +104,6 @@ def _apply_filters(
     if enrichment_predicate is not None:
         query = query.filter(enrichment_predicate)
 
-    # Pipeline membership. "out" is the one that makes the Library a working
-    # queue -- it hides everything already pulled, so what's left is what
-    # hasn't been worked yet (the same thing the voivodeship/city facet
-    # counts have always meant).
-    if pipeline_status == "in":
-        query = query.filter(exists().where(PipelineState.school_id == School.id))
-    elif pipeline_status == "out":
-        query = query.filter(not_(exists().where(PipelineState.school_id == School.id)))
 
     if voivodeship:
         query = query.filter(School.voivodeship == voivodeship)
@@ -423,7 +431,6 @@ def list_schools(
     score_max: int | None = None,
     score_include_unscored: bool = True,
     enrichment: str = Query("all", description="all|enriched|not_enriched|successful|successful_teacher|partial|basic|attempted|never_attempted"),
-    pipeline_status: str = Query("all", description="all|in|out -- whether the school is already in the pipeline"),
     sort: str = "score:desc",
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
@@ -445,7 +452,6 @@ def list_schools(
         score_max=score_max,
         score_include_unscored=score_include_unscored,
         enrichment=enrichment,
-        pipeline_status=pipeline_status,
     )
 
     total = query.count()
@@ -495,7 +501,6 @@ def count_schools(
     score_max: int | None = None,
     score_include_unscored: bool = True,
     enrichment: str = Query("all", description="all|enriched|not_enriched|successful|successful_teacher|partial|basic|attempted|never_attempted"),
-    pipeline_status: str = Query("all", description="all|in|out -- whether the school is already in the pipeline"),
 ):
     query = _apply_filters(
         _base_query(session).with_entities(School.id),
@@ -513,7 +518,6 @@ def count_schools(
         score_max=score_max,
         score_include_unscored=score_include_unscored,
         enrichment=enrichment,
-        pipeline_status=pipeline_status,
     )
     return {"count": query.count()}
 
@@ -535,7 +539,6 @@ def list_school_ids(
     score_max: int | None = None,
     score_include_unscored: bool = True,
     enrichment: str = Query("all", description="all|enriched|not_enriched|successful|successful_teacher|partial|basic|attempted|never_attempted"),
-    pipeline_status: str = Query("all", description="all|in|out -- whether the school is already in the pipeline"),
 ):
     """Every school id matching the given filters, across every page --
     lets the Library's "select all N matching my filters" checkbox act on
@@ -557,7 +560,6 @@ def list_school_ids(
         score_max=score_max,
         score_include_unscored=score_include_unscored,
         enrichment=enrichment,
-        pipeline_status=pipeline_status,
     )
     return {"ids": [row[0] for row in query.all()]}
 
@@ -579,7 +581,6 @@ def export_schools_csv(
     score_max: int | None = None,
     score_include_unscored: bool = True,
     enrichment: str = Query("all", description="all|enriched|not_enriched|successful|successful_teacher|partial|basic|attempted|never_attempted"),
-    pipeline_status: str = Query("all", description="all|in|out -- whether the school is already in the pipeline"),
     sort: str = "score:desc",
 ):
     """CSV export of a filtered Library segment -- for handing a batch to a
@@ -601,7 +602,6 @@ def export_schools_csv(
         score_max=score_max,
         score_include_unscored=score_include_unscored,
         enrichment=enrichment,
-        pipeline_status=pipeline_status,
     )
     field_name, _, direction = sort.partition(":")
     sort_col = SORTABLE_FIELDS.get(field_name, SchoolScore.total_score)
@@ -669,8 +669,12 @@ def _scope_to_facet_query(query, scope: str):
     own filters."""
     if scope == "pipeline":
         return query.join(PipelineState, PipelineState.school_id == School.id)
-    return query.outerjoin(PipelineState, PipelineState.school_id == School.id).filter(
-        PipelineState.school_id.is_(None)
+    # "library" = the available pool, so campaign members are gone from
+    # these counts too, mirroring _apply_filters exactly -- a facet count
+    # must never promise schools the table won't show.
+    return query.filter(
+        not_(exists().where(PipelineState.school_id == School.id)),
+        not_(exists().where(CampaignSchool.school_id == School.id)),
     )
 
 
@@ -694,6 +698,87 @@ def list_cities(session: Session = Depends(get_session), voivodeship: str | None
     query = _scope_to_facet_query(query, scope)
     rows = query.group_by(School.city).order_by(func.count(School.id).desc(), School.city).all()
     return [{"city": city, "count": count} for city, count in rows]
+
+
+DIRECTORY_SORTABLE = {
+    "name": School.name,
+    "city": School.city,
+    "score": SchoolScore.total_score,
+}
+
+
+@router.get("/directory", response_model=DirectoryListOut)
+def directory(
+    session: Session = Depends(get_session),
+    q: str | None = Query(None, description="Search school name or city"),
+    status: str = Query("all", description="all|available|pipeline|campaign"),
+    campaign_id: int | None = None,
+    sort: str = "name:asc",
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
+):
+    """The full register with each school's current assignment -- the
+    read-only complement to the Library-as-available-pool: nothing ever
+    disappears from here, it just changes status (available / pipeline /
+    the campaign it's parked in). Declared BEFORE /{school_id}, which
+    would otherwise swallow the path."""
+    base = (
+        session.query(School, PipelineState.stage, Campaign.name)
+        .outerjoin(PipelineState, PipelineState.school_id == School.id)
+        .outerjoin(CampaignSchool, CampaignSchool.school_id == School.id)
+        .outerjoin(Campaign, Campaign.id == CampaignSchool.campaign_id)
+        .outerjoin(CurrentScore, CurrentScore.school_id == School.id)
+        .outerjoin(SchoolScore, SchoolScore.id == CurrentScore.score_id)
+        .filter(*TARGET_SCHOOL_CONDITIONS)
+    )
+
+    counts = {
+        "pipeline": base.filter(PipelineState.school_id.isnot(None)).count(),
+        "campaign": base.filter(CampaignSchool.school_id.isnot(None)).count(),
+    }
+    total_register = base.count()
+    counts["available"] = total_register - counts["pipeline"] - counts["campaign"]
+
+    if q:
+        like = f"%{q}%"
+        base = base.filter(or_(School.name.ilike(like), School.city.ilike(like)))
+    if campaign_id is not None:
+        base = base.filter(CampaignSchool.campaign_id == campaign_id)
+    elif status == "available":
+        base = base.filter(PipelineState.school_id.is_(None), CampaignSchool.school_id.is_(None))
+    elif status == "pipeline":
+        base = base.filter(PipelineState.school_id.isnot(None))
+    elif status == "campaign":
+        base = base.filter(CampaignSchool.school_id.isnot(None))
+
+    total = base.count()
+    field_name, _, direction = sort.partition(":")
+    sort_col = DIRECTORY_SORTABLE.get(field_name, School.name)
+    sort_col = sort_col.desc().nulls_last() if direction == "desc" else sort_col.asc().nulls_last()
+    rows = base.order_by(sort_col).offset((page - 1) * page_size).limit(page_size).all()
+
+    items = [
+        DirectoryEntryOut(
+            id=school.id,
+            name=school.name,
+            name_disambiguator=school.name_disambiguator,
+            level=school.level.value,
+            voivodeship=school.voivodeship,
+            city=school.city,
+            score=session.query(SchoolScore.total_score)
+            .join(CurrentScore, CurrentScore.score_id == SchoolScore.id)
+            .filter(CurrentScore.school_id == school.id)
+            .scalar(),
+            status="campaign" if campaign_name else ("pipeline" if stage else "available"),
+            campaign_name=campaign_name,
+            stage=stage.value if stage else None,
+        )
+        for school, stage, campaign_name in rows
+    ]
+    return DirectoryListOut(
+        total=total, page=page, page_size=page_size,
+        register_total=total_register, counts=counts, items=items,
+    )
 
 
 @router.get("/{school_id}", response_model=SchoolOut)

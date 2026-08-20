@@ -29,6 +29,7 @@ from levelup.api.v1.schools import (
     _enrichment_predicate,
 )
 from levelup.core.db import Base
+from levelup.models.campaign import Campaign, CampaignSchool
 from levelup.models.enrichment import EnrichmentJob, EnrichmentJobItem, SchoolContact
 from levelup.models.pipeline import PipelineStage, PipelineState
 from levelup.models.school import School, SchoolLevel
@@ -94,6 +95,9 @@ ATTEMPTED = {
 }
 
 IN_PIPELINE = {"director-personal-email", "teacher-named-only", "never-touched"}
+IN_CAMPAIGN = {"personal-plus-office"}
+# The Library is the available pool: assigned schools are not in it.
+VISIBLE = set(SCHOOL_FIXTURES) - IN_PIPELINE - IN_CAMPAIGN
 
 
 @pytest.fixture()
@@ -102,6 +106,7 @@ def session():
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
     db.add(User(id=1, display_name="Owner", email=None))
+    db.add(Campaign(id=77, name="Parked batch", owner_id=1))
     job = EnrichmentJob(id=1, requested_by=1, status="done")
     db.add(job)
 
@@ -129,6 +134,8 @@ def session():
             db.add(EnrichmentJobItem(job_id=1, school_id=index, status="success"))
         if name in IN_PIPELINE:
             db.add(PipelineState(school_id=index, owner_id=1, stage=PipelineStage.NOT_CONTACTED))
+        if name in IN_CAMPAIGN:
+            db.add(CampaignSchool(campaign_id=77, school_id=index, stage_at_move="not_contacted"))
 
     db.commit()
     yield db
@@ -181,8 +188,10 @@ def test_successful_teacher_is_the_teacher_email_subset_of_successful(session):
 
     assert teacher_successes == {"teacher-personal-email", "both-personal-emails"}
     assert "director-personal-email" not in teacher_successes
-    # Strictly a subset of "successful", never something outside it.
-    assert teacher_successes < names_matching(session, enrichment="successful")
+    # A subset of "successful", never something outside it. (Not asserted
+    # strict: pool semantics can hide the director-only successes that
+    # would otherwise make the containment proper.)
+    assert teacher_successes <= names_matching(session, enrichment="successful")
 
 
 def test_best_email_prefers_the_teacher_over_the_director(session):
@@ -201,14 +210,14 @@ def test_best_email_prefers_the_teacher_over_the_director(session):
 
 
 def test_enriched_is_exactly_the_complement_of_not_enriched(session):
-    all_names = set(SCHOOL_FIXTURES)
     enriched = names_matching(session, enrichment="enriched")
     not_enriched = names_matching(session, enrichment="not_enriched")
 
-    assert enriched | not_enriched == all_names
+    assert enriched | not_enriched == VISIBLE
     assert enriched & not_enriched == set()
     assert enriched == {
-        name for name, level in expected_levels(session).items() if level != "not_enriched"
+        name for name, level in expected_levels(session).items()
+        if level != "not_enriched" and name in VISIBLE
     }
 
 
@@ -218,18 +227,18 @@ def test_attempted_counts_every_run_whatever_it_found(session):
     nothing."""
     attempted = names_matching(session, enrichment="attempted")
 
-    assert attempted == ATTEMPTED
+    assert attempted == ATTEMPTED & VISIBLE
     assert "attempted-found-nothing" in attempted
-    assert "director-personal-email" in attempted  # a run that found plenty
-    levels = expected_levels(session)
-    assert {levels[name] for name in attempted} == {"successful", "partial", "not_enriched"}
+    # "director-personal-email" was attempted too, but it's in the pipeline
+    # -- the Library (available pool) no longer shows it at all.
+    assert "director-personal-email" not in attempted
 
 
 def test_attempted_and_never_attempted_partition_the_library(session):
     attempted = names_matching(session, enrichment="attempted")
     never_attempted = names_matching(session, enrichment="never_attempted")
 
-    assert attempted | never_attempted == set(SCHOOL_FIXTURES)
+    assert attempted | never_attempted == VISIBLE
     assert attempted & never_attempted == set()
 
 
@@ -247,26 +256,38 @@ def test_attempted_is_independent_of_the_outcome_levels(session):
 
 
 def test_unknown_enrichment_value_narrows_nothing(session):
-    assert names_matching(session, enrichment="not-a-real-value") == set(SCHOOL_FIXTURES)
-    assert names_matching(session, enrichment="all") == set(SCHOOL_FIXTURES)
+    assert names_matching(session, enrichment="not-a-real-value") == VISIBLE
+    assert names_matching(session, enrichment="all") == VISIBLE
 
 
-def test_pipeline_status_splits_the_library_in_two(session):
-    in_pipeline = names_matching(session, pipeline_status="in")
-    out_of_pipeline = names_matching(session, pipeline_status="out")
+def test_library_is_the_available_pool(session):
+    """Assigned schools -- pipeline or campaign -- are not in the Library
+    at all, and come back the moment their assignment is removed."""
+    assert names_matching(session) == VISIBLE
+    for name in IN_PIPELINE | IN_CAMPAIGN:
+        assert name not in names_matching(session), name
 
-    assert in_pipeline == IN_PIPELINE
-    assert out_of_pipeline == set(SCHOOL_FIXTURES) - IN_PIPELINE
-    assert names_matching(session, pipeline_status="all") == set(SCHOOL_FIXTURES)
+    # The retired pipeline_status parameter is accepted and ignored, so a
+    # saved view from before the change can't crash or resurrect anything.
+    assert names_matching(session, pipeline_status="in") == VISIBLE
+
+    # Removal replenishes: free one pipeline school and one campaign school.
+    ids = {school.name: school.id for school in session.query(School).all()}
+    session.query(PipelineState).filter_by(school_id=ids["never-touched"]).delete()
+    session.query(CampaignSchool).filter_by(school_id=ids["personal-plus-office"]).delete()
+    session.commit()
+    replenished = names_matching(session)
+    assert "never-touched" in replenished and "personal-plus-office" in replenished
 
 
-def test_enrichment_and_pipeline_filters_compose(session):
-    """The combination the filters were asked for: what's left to work on --
-    not yet pulled, and no contact data yet."""
-    assert names_matching(session, enrichment="not_enriched", pipeline_status="out") == {
+def test_enrichment_filter_composes_with_the_pool_semantics(session):
+    """What's left to work on -- unassigned AND no contact data yet -- is
+    now just the enrichment filter, since the pool excludes assigned
+    schools by construction."""
+    assert names_matching(session, enrichment="not_enriched") == {
         name
         for name, level in expected_levels(session).items()
-        if level == "not_enriched" and name not in IN_PIPELINE
+        if level == "not_enriched" and name in VISIBLE
     }
 
 

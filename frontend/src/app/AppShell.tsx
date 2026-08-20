@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { to: "/library", label: "Library" },
   { to: "/pipeline", label: "Pipeline" },
   { to: "/campaigns", label: "Campaigns" },
+  { to: "/directory", label: "Directory" },
   { to: "/queue", label: "Priority queue" },
   { to: "/reports", label: "Reports" },
 ]

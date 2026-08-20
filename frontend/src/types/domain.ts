@@ -214,8 +214,35 @@ export interface VoivodeshipFacet {
 
 export type FacetScope = "library" | "pipeline"
 
+export type DirectoryStatus = "available" | "pipeline" | "campaign"
+
+/** One school in the full-register Directory, with its current assignment. */
+export interface DirectoryEntry {
+  id: number
+  name: string
+  name_disambiguator: string | null
+  level: SchoolLevel
+  voivodeship: string | null
+  city: string | null
+  score: number | null
+  status: DirectoryStatus
+  campaign_name: string | null
+  stage: PipelineStage | null
+}
+
+export interface DirectoryListResponse {
+  total: number
+  page: number
+  page_size: number
+  register_total: number
+  counts: Record<DirectoryStatus, number>
+  items: DirectoryEntry[]
+}
+
 export interface DashboardSummary {
   library_total: number
+  /** The available pool -- register minus pipeline minus campaigns. */
+  available_total: number
   library_by_level: Partial<Record<SchoolLevel, number>>
   scored_total: number
   unscored_total: number
@@ -311,8 +338,6 @@ export interface LibraryFilters {
    * and separately whether enrichment has ever run against it at all
    * ("attempted"/"never_attempted", regardless of what it found). */
   enrichment: EnrichmentFilter
-  /** Whether the school has already been pulled into the pipeline. */
-  pipeline_status: PipelineStatusFilter
 }
 
 export type EnrichmentFilter =
@@ -329,7 +354,6 @@ export type EnrichmentFilter =
  * the teacher-email refinement. */
 export type PipelineEnrichmentFilter = EnrichmentLevel | "successful_teacher"
 
-export type PipelineStatusFilter = "all" | "in" | "out"
 
 export type SavedViewScope = "library" | "pipeline"
 
@@ -409,5 +433,4 @@ export const DEFAULT_LIBRARY_FILTERS: LibraryFilters = {
   score_max: null,
   score_include_unscored: true,
   enrichment: "all",
-  pipeline_status: "all",
 }

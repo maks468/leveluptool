@@ -28,9 +28,9 @@ export function DashboardPage() {
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
-          label="Library"
-          value={summary?.library_total ?? "—"}
-          sublabel={summary ? `${summary.scored_total.toLocaleString()} scored · ${summary.unscored_total.toLocaleString()} unscored` : undefined}
+          label="Available in Library"
+          value={summary?.available_total ?? "—"}
+          sublabel={summary ? `of ${summary.library_total.toLocaleString()} in register · ${summary.scored_total.toLocaleString()} scored` : undefined}
           icon={<Building2 className="h-4 w-4" />}
         />
         <StatCard

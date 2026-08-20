@@ -175,8 +175,31 @@ class ActivityLogCreate(BaseModel):
     note: str
 
 
+class DirectoryEntryOut(BaseModel):
+    id: int
+    name: str
+    name_disambiguator: str | None
+    level: str
+    voivodeship: str | None
+    city: str | None
+    score: int | None
+    status: str  # available | pipeline | campaign
+    campaign_name: str | None
+    stage: str | None
+
+
+class DirectoryListOut(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    register_total: int
+    counts: dict[str, int]  # available / pipeline / campaign
+    items: list[DirectoryEntryOut]
+
+
 class DashboardSummaryOut(BaseModel):
     library_total: int
+    available_total: int
     library_by_level: dict[str, int]
     scored_total: int
     unscored_total: int

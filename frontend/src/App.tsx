@@ -5,6 +5,7 @@ import { DashboardPage } from "@/features/dashboard/DashboardPage"
 import { LibraryPage } from "@/features/library/LibraryPage"
 import { PipelinePage } from "@/features/pipeline/PipelinePage"
 import { CampaignsPage } from "@/features/campaigns/CampaignsPage"
+import { DirectoryPage } from "@/features/directory/DirectoryPage"
 import { SchoolDetailPage } from "@/features/school-detail/SchoolDetailPage"
 import { PriorityQueuePage } from "@/features/queue/PriorityQueuePage"
 import { ReportsPage } from "@/features/reports/ReportsPage"
@@ -21,6 +22,7 @@ function App() {
           <Route path="/pipeline/board" element={<Navigate to="/pipeline" replace />} />
           <Route path="/pipeline/table" element={<Navigate to="/pipeline" replace />} />
           <Route path="/campaigns" element={<CampaignsPage />} />
+          <Route path="/directory" element={<DirectoryPage />} />
           <Route path="/queue" element={<PriorityQueuePage />} />
           <Route path="/tasks" element={<Navigate to="/queue" replace />} />
           <Route path="/reports" element={<ReportsPage />} />

@@ -27,12 +27,6 @@ const ENRICHMENT_OPTIONS = [
   { value: "never_attempted", label: "Never attempted" },
 ] as const
 
-const PIPELINE_STATUS_OPTIONS = [
-  { value: "all", label: "Any" },
-  { value: "out", label: "Not in the pipeline" },
-  { value: "in", label: "Already in the pipeline" },
-] as const
-
 function Select({
   label,
   value,
@@ -188,12 +182,9 @@ export function QualificationFiltersPanel() {
           options={ENRICHMENT_OPTIONS}
         />
 
-        <Select
-          label="Pipeline"
-          value={filters.pipeline_status}
-          onChange={(v) => set("pipeline_status", v as typeof filters.pipeline_status)}
-          options={PIPELINE_STATUS_OPTIONS}
-        />
+        {/* The Library shows only unassigned schools now -- schools in the
+            pipeline or a campaign live in the Directory tab, so the old
+            Pipeline in/out filter has nothing left to select. */}
       </div>
     </div>
   )

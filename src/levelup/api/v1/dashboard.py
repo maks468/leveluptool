@@ -4,7 +4,7 @@ dashboard. Never mutates anything -- pure summary queries."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func
+from sqlalchemy import exists, func, not_
 from sqlalchemy.orm import Session
 
 from levelup.api.v1.schemas import DashboardSummaryOut, RecentActivityOut, SchoolOut
@@ -46,6 +46,17 @@ def get_summary(session: Session = Depends(get_session)):
 
     pipeline_total = session.query(PipelineState).count()
     campaign_schools_total = session.query(CampaignSchool).count()
+    # The available pool -- what the Library page now shows: the register
+    # minus everything currently assigned to the pipeline or a campaign.
+    available_total = (
+        session.query(School)
+        .filter(*TARGET_SCHOOL_CONDITIONS)
+        .filter(
+            not_(exists().where(PipelineState.school_id == School.id)),
+            not_(exists().where(CampaignSchool.school_id == School.id)),
+        )
+        .count()
+    )
     stage_counts = {
         stage.value: count
         for stage, count in session.query(PipelineState.stage, func.count(PipelineState.school_id))
@@ -68,6 +79,7 @@ def get_summary(session: Session = Depends(get_session)):
 
     return DashboardSummaryOut(
         library_total=library_total,
+        available_total=available_total,
         library_by_level=library_by_level,
         scored_total=scored_total,
         unscored_total=unscored_total,
