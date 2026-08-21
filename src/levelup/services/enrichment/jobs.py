@@ -8,6 +8,8 @@ import re
 import time
 from datetime import datetime, timezone
 
+from sqlalchemy.exc import OperationalError
+
 from levelup.core.db import SessionLocal
 from levelup.models.enrichment import EnrichmentJob, EnrichmentJobItem, SchoolContact
 from levelup.models.pipeline import ActivityType, PipelineState, PipelineStage
@@ -820,6 +822,37 @@ def enrich_school_dry_run(session, school: School) -> dict:
         session.rollback()
 
 
+_LOCK_RETRY_DELAYS_SECONDS = (1, 3, 8, 20)
+
+
+def _with_lock_retry(operation, *, what: str):
+    """Run a short DB operation, retrying while SQLite reports the write
+    lock as busy.
+
+    BUG FIX: the database runs in rollback-journal mode (see core/db.py --
+    deliberately, WAL silently reverted committed data on this Windows bind
+    mount), where a writer takes an EXCLUSIVE lock. Two writers exist: a
+    batch enrichment run and the auto-enrich background thread. Confirmed
+    directly: a 100-school batch died at school 75 because the loop's own
+    bookkeeping commit -- not the school's enrichment, which is already
+    guarded -- raised "database is locked", killing the runner thread and
+    leaving the job "running" with 26 items pending forever, unrecoverable
+    without a restart. busy_timeout alone wasn't enough under a long batch,
+    so the loop's own writes now wait and retry instead of aborting a run
+    that is otherwise perfectly healthy."""
+    last: Exception | None = None
+    for delay in (*_LOCK_RETRY_DELAYS_SECONDS, None):
+        try:
+            return operation()
+        except OperationalError as exc:  # noqa: PERF203 -- retry loop
+            if "locked" not in str(exc).lower() or delay is None:
+                raise
+            last = exc
+            print(f"enrichment: {what} blocked by a DB lock, retrying in {delay}s", flush=True)
+            time.sleep(delay)
+    raise last  # unreachable: the final iteration re-raises
+
+
 def run_job(job_id: int) -> None:
     """Runs synchronously against its own DB session -- intended to be
     invoked via FastAPI BackgroundTasks so the triggering request returns
@@ -841,14 +874,14 @@ def run_job(job_id: int) -> None:
             # it. The school currently mid-scrape always finishes rather
             # than being killed outright; everything still "pending" is
             # skipped instead of started.
-            session.refresh(job)
+            _with_lock_retry(lambda: session.refresh(job), what="cancel-flag refresh")
             if job.cancel_requested:
                 cancelled = True
                 break
 
             item.status = "running"
             item.started_at = datetime.now(timezone.utc)
-            session.commit()
+            _with_lock_retry(session.commit, what="item start")
 
             try:
                 school = session.query(School).filter_by(id=item.school_id).one()

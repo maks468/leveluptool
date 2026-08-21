@@ -30,7 +30,12 @@ def _set_sqlite_pragmas(dbapi_connection, _connection_record):
     cursor.execute("PRAGMA journal_mode=DELETE")
     # Writers briefly block readers in DELETE mode -- wait instead of
     # throwing "database is locked" at the first overlap.
-    cursor.execute("PRAGMA busy_timeout=5000")
+    # 30s, not 5: a batch enrichment run holds the write lock in bursts
+    # while the auto-enrich thread also writes, and 5s was short enough that
+    # ordinary reads (Library, dashboard) 500'd and a batch runner died
+    # mid-job. Waiting is always better than failing here -- nothing in this
+    # app is latency-critical, and every writer is short.
+    cursor.execute("PRAGMA busy_timeout=30000")
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.close()
 
