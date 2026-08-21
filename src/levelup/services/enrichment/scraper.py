@@ -21,11 +21,12 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import sys
 import tempfile
 import threading
 import time
 from html import unescape as _html_unescape
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse
 
 import requests
 import urllib3
@@ -385,8 +386,44 @@ def _normalize_name_order(candidate: str) -> str | None:
 # lookbehind can't express this, so it's checked as a window here.
 _DEPUTY_CONTEXT_RE = re.compile(r"(?i:wice|zast[eę]pc|z-ca|p\.\s*o\.)[^,.;\n]{0,25}$")
 
+# A subject label sitting next to a person's name is not always a TEACHING
+# assignment -- confirmed directly: psp.bialystok.pl's homepage congratulates
+# competition winners ("z Wojewódzkich Konkursów Przedmiotowych uczniowie
+# klasy VIIIa uzyskali następujące wyniki: Język Angielski: Karolina
+# Brzozowska - tytuł laureata, Julia Nitkiewicz - tytuł laureata"), which is
+# character-for-character the shape of "Język angielski: <teacher name>".
+# Every name in such a list is a STUDENT, so the match is not merely
+# unhelpful -- acted on, it names a child as the school's English teacher.
+# What separates the two is the achievement vocabulary wrapping the list, so
+# it is checked in a window on either side of the match: results copy leads
+# in ("Konkurs", "laureaci", "gratulujemy") and trails out per name
+# ("- tytuł laureata", "II miejsce"). Applied to the English-teacher scan
+# only -- a director legitimately appears in prize-giving prose ("Dyrektor
+# Anna Kowalska wręczyła nagrody laureatom"), so guarding that path would
+# lose real directors.
+_ACHIEVEMENT_BEFORE_RE = re.compile(
+    r"(?i:konkurs|olimpiad|laureat|finalist|gratulujemy|etap\s+(?:szkoln|rejonow|wojew)"
+    r"|wyniki\s+(?:konkurs|egzamin)|osi[ąa]gni[eę]|zdoby[lł]|nagrodzon)"
+)
+_ACHIEVEMENT_AFTER_RE = re.compile(
+    r"(?i:tytu[łl]\s+laureat|laureat|finalist|wyr[óo]?[żz]nien|[IVX]{1,4}\s+miejsce|\d+\s*miejsce)"
+)
+_ACHIEVEMENT_BEFORE_CHARS = 160
+_ACHIEVEMENT_AFTER_CHARS = 60
 
-def _earliest_valid_match(text: str, patterns: tuple[re.Pattern, ...]) -> str | None:
+
+def _in_achievement_context(text: str, start: int, end: int) -> bool:
+    """True when a subject-plus-name match sits inside a competition-results
+    or prize-winners list (see _ACHIEVEMENT_BEFORE_RE) rather than a staff
+    roster -- i.e. the name belongs to a student, not a teacher."""
+    before = text[max(0, start - _ACHIEVEMENT_BEFORE_CHARS) : start]
+    after = text[end : end + _ACHIEVEMENT_AFTER_CHARS]
+    return bool(_ACHIEVEMENT_BEFORE_RE.search(before) or _ACHIEVEMENT_AFTER_RE.search(after))
+
+
+def _earliest_valid_match(
+    text: str, patterns: tuple[re.Pattern, ...], *, achievement_guard: bool = False
+) -> str | None:
     """Confirmed real failure mode: a flattened staff table row often reads
     "Begierska Renata Dyrektor Lenda Kamila Wicedyrektor" (surname,
     first name, role, repeated per row) -- so the keyword-first pattern
@@ -400,13 +437,17 @@ def _earliest_valid_match(text: str, patterns: tuple[re.Pattern, ...]) -> str | 
     immediately before or after it, never a further one two rows down.
 
     Matches preceded by a deputy marker (see _DEPUTY_CONTEXT_RE) are
-    skipped entirely: they are statements about the deputy."""
+    skipped entirely: they are statements about the deputy. With
+    achievement_guard, matches inside a competition-results list are
+    skipped too (see _in_achievement_context): those names are students."""
     candidates = []
     for pattern in patterns:
         for match in pattern.finditer(text):
             window_start = max(0, match.start() - 30)
             if _DEPUTY_CONTEXT_RE.search(text[window_start : match.start()]):
                 continue  # "Wicedyrektor …" / "Zastępca dyrektora …" -- not the director
+            if achievement_guard and _in_achievement_context(text, match.start(), match.end()):
+                continue  # "Język angielski: <name> - tytuł laureata" -- a student
             normalized = _normalize_name_order(match.group(1).strip())
             if normalized:
                 candidates.append((match.start(), normalized))
@@ -544,6 +585,19 @@ SUBPAGE_KEYWORDS_BY_PRIORITY = (
         # "dyrekcja" alone does not substring-match.
         "dyrektor", "dyrekcja", "grono-pedagogiczne", "grono pedagogiczne", "nauczyciele",
         "kadra", "pracownicy", "rada-pedagogiczna", "rada pedagogiczna", "dane podstawowe",
+        # Vocabulary gaps found by auditing 44 high-scoring schools that
+        # reached "basic" enrichment with no teacher. Each of these is a
+        # real nav label on a real school site whose roster the crawl could
+        # not reach because the label used none of the words above:
+        # "Nasz zespół" (private/Montessori schools overwhelmingly prefer
+        # this to "Kadra"), "Nasi nauczyciele", and the ENGLISH labels that
+        # international/bilingual schools use for their only staff page --
+        # exactly the school profile this tool targets, so missing them is
+        # expensive. "team"/"staff" are boundary-matched (see
+        # _keyword_matches) so they cannot fire inside unrelated words.
+        "zespol", "zespół", "nasz zespol", "nasz zespół", "nasi nauczyciele",
+        "wychowawcy", "specjalisci", "specjaliści",
+        "team", "staff", "teachers", "our team", "faculty",
     ),
     ("kontakt", "wladze", "władze", "struktura"),
     # BUG FIX: only the hyphenated URL-slug spelling was listed -- confirmed
@@ -667,23 +721,90 @@ _AMBIGUOUS_SHORT_KEYWORDS = frozenset({"bip", "o nas"})
 _MIDWORD_RISK_KEYWORDS = frozenset({"rodo"})
 _PL_LETTERS = "a-ząćęłńóśźżA-ZĄĆĘŁŃÓŚŹŻ"
 
+# Short ENGLISH staff words carry the same mid-word collision risk as
+# "rodo", against a much larger surface: "team" is inside "teamviewer" and
+# "steam" (a STEAM-programme page is on half these schools' navs), "staff"
+# inside "staffordshire", and every one of them can appear inside a longer
+# URL slug. Delimited by any non-letter, so "our-team", "/team/", "Team"
+# and "Nasz Team" all match while "STEAMowe ABC" does not.
+_LATIN_LETTERS = "a-zA-Z"
+_ENGLISH_SHORT_KEYWORDS = frozenset({"team", "staff", "teachers", "faculty", "our team"})
+
 
 def _keyword_matches(keyword: str, haystack: str) -> bool:
     if keyword in _AMBIGUOUS_SHORT_KEYWORDS:
         return bool(re.search(rf"(?:^|[/.\s]){re.escape(keyword)}(?:$|[/.\s])", haystack))
     if keyword in _MIDWORD_RISK_KEYWORDS:
         return bool(re.search(rf"(?<![{_PL_LETTERS}]){re.escape(keyword)}(?![{_PL_LETTERS}])", haystack))
+    if keyword in _ENGLISH_SHORT_KEYWORDS:
+        return bool(
+            re.search(rf"(?<![{_LATIN_LETTERS}]){re.escape(keyword)}(?![{_LATIN_LETTERS}])", haystack)
+        )
     return keyword in haystack
+
+
+# Parameters that identify a CAMPAIGN, not a page: two links differing only
+# by these are the same page and must still collapse (see _dedup_key).
+_TRACKING_QUERY_PARAMS = frozenset(
+    {
+        "fbclid", "gclid", "msclkid", "mc_cid", "mc_eid", "ref", "source", "yclid", "igshid",
+        # Language selectors: see _strip_language_prefix for why a
+        # translation of a page already in hand must not cost a page slot.
+        "lang", "language", "lng", "l",
+    }
+)
+
+# Locale path segments used by the multilingual plugins on Polish school
+# sites (WPML, Polylang and friends).
+_LANGUAGE_PATH_SEGMENTS = frozenset({"en", "pl", "de", "ua", "uk", "ru", "fr", "es", "it", "cs"})
+
+
+def _strip_language_prefix(path: str) -> str:
+    """Drops a leading locale segment ("/en/kadra" -> "/kadra") so a
+    TRANSLATION of a page counts as that page for crawl-budget purposes.
+
+    Confirmed directly: one bilingual school spent its entire ten-page
+    budget on five URLs, two of which were the /en/ mirrors of pages it
+    already held in Polish, and never reached the pages that named its
+    English teachers. Bilingual and international schools are precisely
+    this tool's highest-value segment, so paying twice per page there is
+    the worst place to waste budget.
+
+    Note the deliberate trade: an English page with NO Polish counterpart
+    keeps its own key (nothing else maps to that path), so it is still
+    crawlable -- only a mirror of a page already fetched is skipped."""
+    if not path:
+        return path
+    head, slash, tail = path.lstrip("/").partition("/")
+    if head.lower() in _LANGUAGE_PATH_SEGMENTS:
+        return "/" + tail if slash else ""
+    return path
 
 
 def _dedup_key(url: str) -> str:
     """Collapses http/https, www/non-www, and trailing-slash variants of
     the same page to one key so the crawl budget isn't wasted re-fetching
-    a page it already has under a slightly different URL spelling."""
+    a page it already has under a slightly different URL spelling.
+
+    The QUERY STRING is part of the key. It used to be discarded, which
+    silently destroyed the crawl on any site whose pages are querystring
+    permalinks -- confirmed directly on two audited schools: every nav
+    target was "/index.php?id=..." or "/?p=...", so all of them collapsed
+    to the ONE key "host/index.php" and the crawl fetched a single page and
+    declared the site link-less. Tracking parameters are still stripped, so
+    the variants this was originally written to collapse (a nav link
+    carrying utm_* or fbclid) still collapse."""
     parsed = urlparse(url)
     netloc = parsed.netloc.lower().removeprefix("www.")
-    path = parsed.path.rstrip("/")
-    return f"{netloc}{path}"
+    path = _strip_language_prefix(parsed.path.rstrip("/"))
+    meaningful = [
+        (k, v)
+        for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if k.lower() not in _TRACKING_QUERY_PARAMS and not k.lower().startswith("utm_")
+    ]
+    if not meaningful:
+        return f"{netloc}{path}"
+    return f"{netloc}{path}?{urlencode(sorted(meaningful))}"
 
 
 def _fetch_failure_status(url: str) -> str:
@@ -1031,6 +1152,30 @@ def _http_session() -> requests.Session:
     return session
 
 
+# Where a fetch actually LANDED, keyed by the URL that was requested. A
+# school site on a legacy CMS routinely 302s "/" to "/asp/pl_start.asp" and
+# then writes every nav link as a bare query string ("?typ=14&menu=223").
+# Resolved against the REQUESTED url, urljoin drops the script name and
+# every one of those links collapses back onto the homepage -- confirmed
+# directly on one audited school, where three "staff pages" were
+# byte-identical copies of the front page. Resolved against the final url
+# they point where a browser would. Thread-local because the crawl keeps a
+# Session per thread.
+def _note_final_url(requested: str, final: str) -> None:
+    if not final or final == requested:
+        return
+    store = getattr(_thread_state, "final_urls", None)
+    if store is None:
+        store = {}
+        _thread_state.final_urls = store
+    store[_dedup_key(requested)] = final
+
+
+def _final_url_for(requested: str) -> str | None:
+    store = getattr(_thread_state, "final_urls", None)
+    return store.get(_dedup_key(requested)) if store else None
+
+
 def fetch_page(url: str) -> str | None:
     """BUG FIX: one short, bounded retry, specifically for a TIMEOUT or a
     TRANSIENT HTTP error response (403/429/5xx and friends) -- confirmed
@@ -1066,6 +1211,7 @@ def fetch_page(url: str) -> str | None:
                     continue
                 _note_host_blocked(url)
                 return None
+            _note_final_url(url, resp.url)
             return text
         except requests.exceptions.SSLError:
             # Confirmed directly: some Polish school sites (e.g. lo2.lublin.eu)
@@ -1078,6 +1224,7 @@ def fetch_page(url: str) -> str | None:
             try:
                 resp = _http_session().get(url, timeout=FETCH_TIMEOUT_SECONDS, verify=False)
                 resp.raise_for_status()
+                _note_final_url(url, resp.url)
                 return _decoded_text(resp)
             except requests.RequestException:
                 return None
@@ -1148,6 +1295,21 @@ def download_for_vision(url: str, *, max_bytes: int = 10 * 1024 * 1024) -> str |
         resp.close()
 
 
+def _image_alt_text(anchor) -> str:
+    """The accessible name contributed by an anchor's images -- their alt
+    and title attributes, lowercased. Empty for ordinary text links."""
+    parts: list[str] = []
+    for img in anchor.select("img"):
+        for attr in ("alt", "title"):
+            value = img.get(attr)
+            if value:
+                parts.append(re.sub(r"\s+", " ", value).strip().lower())
+    title = anchor.get("title")
+    if title:
+        parts.append(re.sub(r"\s+", " ", title).strip().lower())
+    return " ".join(parts)
+
+
 def _find_subpage_links(soup: BeautifulSoup, base_url: str, school_name: str = "") -> list[tuple[int, str]]:
     """Returns (priority_tier, absolute_url) pairs -- lower tier is more
     valuable to visit first. Tiers are compared globally across the whole
@@ -1192,7 +1354,14 @@ def _find_subpage_links(soup: BeautifulSoup, base_url: str, school_name: str = "
         if EMAIL_RE.fullmatch(href.strip()):
             continue
         label = re.sub(r"\s+", " ", a.get_text(" ")).strip().lower()
-        haystack = f"{href.lower()} {label}"
+        # An IMAGE-ONLY nav link has no text at all, so label is "" and only
+        # the href could ever match a keyword. Confirmed directly on an
+        # audited school whose entire navigation is picture buttons: the
+        # roster link's alt text read "Kadra" while its href was an opaque
+        # "/index.php?id=42". The accessible name of an image link IS its
+        # alt/title attribute, so it belongs in the same haystack as the
+        # anchor's own text.
+        haystack = f"{href.lower()} {label} {_image_alt_text(a)}"
         if any(_keyword_matches(kw, haystack) for kw in SUBPAGE_EXCLUDE_KEYWORDS):
             continue
         full = urljoin(base_url, href)
@@ -1299,6 +1468,63 @@ def _find_subpage_links(soup: BeautifulSoup, base_url: str, school_name: str = "
 # chooser can't run away with the crawl budget on a false match attempt.
 _MAX_HUB_CANDIDATE_LINKS = 6
 _MAX_HUB_CANDIDATE_FETCHES = 3
+
+
+def all_candidate_links(soup: BeautifulSoup, base_url: str, limit: int = 120) -> list[tuple[str, str]]:
+    """Every navigable link on a page as (label, absolute_url), in document
+    order, deduplicated -- the RAW input for an LLM nav-picker (see
+    scrape_school_website's staff_page_picker).
+
+    Deliberately much wider than _find_subpage_links: no keyword tiering,
+    no same-domain restriction, no exclude list. Those filters are exactly
+    what hides an untiered roster (an image-only nav, an English label, a
+    roster on the school's own other subdomain), so the picker has to see
+    what they would have dropped. It stays cheap because it only ever
+    feeds ONE model call, and the picker may only return URLs from this
+    list -- nothing here is fetched on the strength of appearing in it.
+
+    Excluded outright: same-page anchors, mailto/tel/javascript, obvious
+    binaries, and the e-register/social links every Polish school site
+    carries (never a staff roster, and they crowd the list)."""
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for a in soup.select("a[href]"):
+        href = (a.get("href") or "").strip()
+        if not href or href.startswith(("mailto:", "tel:", "javascript:", "#")):
+            continue
+        if EMAIL_RE.fullmatch(href):
+            continue
+        full = urljoin(base_url, href).split("#")[0]
+        if full.lower().endswith(NON_HTML_EXTENSIONS):
+            continue
+        if any(noise in full.lower() for noise in _NAV_NOISE_HOSTS):
+            continue
+        key = _dedup_key(full)
+        if not key or key in seen or key == _dedup_key(base_url):
+            continue
+        seen.add(key)
+        # Case preserved here (unlike the keyword-matching haystack): this
+        # label is read by a model, and "Our Team" reads as a nav item
+        # where "our team" reads as prose.
+        label = re.sub(r"\s+", " ", a.get_text(" ")).strip()
+        if not label:
+            img = a.select_one("img[alt], img[title]")
+            if img:
+                label = re.sub(r"\s+", " ", img.get("alt") or img.get("title") or "").strip()
+        out.append((label, full))
+        if len(out) >= limit:
+            break
+    return out
+
+
+# Third-party destinations on essentially every Polish school homepage.
+# None can be a staff roster, and together they can fill an entire nav.
+_NAV_NOISE_HOSTS = (
+    "facebook.com", "instagram.com", "youtube.com", "twitter.com", "x.com", "tiktok.com",
+    "linkedin.com", "librus.pl", "synergia.librus", "vulcan.edu.pl", "dziennik.", "eduvulcan",
+    "gov.pl", "men.gov.pl", "ore.edu.pl", "google.com", "office.com", "microsoft.com",
+    "wordpress.org", "bip.gov.pl",
+)
 
 
 def _find_hub_candidates(soup: BeautifulSoup, base_url: str) -> list[str]:
@@ -1570,7 +1796,15 @@ def _english_teacher_from_entries(soup: BeautifulSoup, patron_tokens: set[str]) 
     right after it (confirmed real failures: a Spanish teacher and an IT
     teacher were being tagged as the English teacher)."""
     for entry in _staff_entries(soup):
-        if _ENGLISH_KEYWORD_RE.search(entry):
+        match = _ENGLISH_KEYWORD_RE.search(entry)
+        if match:
+            # A prize-winners list rendered as list items reaches here as an
+            # ordinary "entry" ("Język Angielski: Karolina Brzozowska - tytuł
+            # laureata") -- same student-not-teacher trap as the flattened
+            # path below, so the same guard applies (see
+            # _in_achievement_context).
+            if _in_achievement_context(entry, match.start(), match.end()):
+                continue
             name = _person_name_in(entry, patron_tokens)
             if name:
                 return name
@@ -1599,27 +1833,73 @@ _TRUNCATION_MARKER = chr(10) + "[...]" + chr(10)
 _TRUNCATION_ROLE_RE = re.compile(r"angiel|dyrektor", re.IGNORECASE)
 
 
+def _merge_interval(merged: list[list[int]], start: int, end: int) -> tuple[list[list[int]], int]:
+    """Insert [start, end) into a sorted list of disjoint intervals.
+
+    Returns the new list and how many characters were NOT already covered
+    -- the honest cost of adding this window (see _cap_for_llm)."""
+    already = sum(max(0, min(end, s_end) - max(start, s_start)) for s_start, s_end in merged)
+    out: list[list[int]] = []
+    lo, hi = start, end
+    for s_start, s_end in merged:
+        if s_end < lo or s_start > hi:
+            out.append([s_start, s_end])
+        else:
+            lo, hi = min(lo, s_start), max(hi, s_end)
+    out.append([lo, hi])
+    out.sort()
+    return out, (end - start) - already
+
+
 def _cap_for_llm(text: str) -> str:
     if len(text) <= _MAX_LLM_PAGE_CHARS:
         return text
     head, tail = text[:_TRUNCATION_HEAD_CHARS], text[_TRUNCATION_HEAD_CHARS:]
 
-    windows: list[list[int]] = []
+    # A window is only USEFUL if it puts the role word next to a person's
+    # NAME -- that pairing is what the extraction has to ground against.
+    #
+    # Windows used to be merged as they were discovered and then filled
+    # first-come-first-served, which on a long page spends the entire
+    # budget on whichever mentions come first: marketing prose ("nauka
+    # języka angielskiego w wymiarze rozszerzonym"), never the roster.
+    # Confirmed directly on a 34,000-char school page that says "angielski"
+    # thirty times in its programme copy before the staff table at ~17,000
+    # -- and because every one of those mentions overlaps the next, they
+    # merged into ONE window so large that truncating it threw the roster
+    # away regardless. So candidates are collected per match and UNMERGED,
+    # ranked so name-bearing ones are taken first, and only the selected
+    # ones are merged and emitted in document order. Same budget, same
+    # token cost, but the part that can actually name a teacher survives.
+    candidates: list[tuple[int, int, bool]] = []
     for match in _TRUNCATION_ROLE_RE.finditer(tail):
         start = max(0, match.start() - _TRUNCATION_WINDOW_CHARS)
         end = min(len(tail), match.end() + _TRUNCATION_WINDOW_CHARS)
-        if windows and start <= windows[-1][1]:
-            windows[-1][1] = max(windows[-1][1], end)  # merge overlaps
-        else:
-            windows.append([start, end])
-        if sum(e - s for s, e in windows) >= _MAX_LLM_PAGE_CHARS - len(head):
-            break
+        candidates.append((start, end, bool(_NAME_GROUP_RE.search(tail[start:end]))))
 
-    if not windows:  # nothing role-relevant later on -- old contiguous cut
+    if not candidates:  # nothing role-relevant later on -- old contiguous cut
         return text[:_MAX_LLM_PAGE_CHARS]
 
+    budget = _MAX_LLM_PAGE_CHARS - len(head)
+    ordered = [c for c in candidates if c[2]] + [c for c in candidates if not c[2]]
+
+    merged: list[list[int]] = []
+    used = 0
+    for start, end, _named in ordered:
+        if used >= budget:
+            break
+        # Charge only characters not already covered. Summing the overlap
+        # against each previously-picked window separately double-counts it
+        # whenever picks overlap each other -- on a page with 200
+        # overlapping windows that drove the running total negative, so the
+        # budget never tripped and every window was selected, which is the
+        # very starvation this ranking exists to prevent. Coverage is
+        # therefore tracked as one merged, disjoint interval set.
+        merged, added = _merge_interval(merged, start, end)
+        used += added
+
     out = head
-    for start, end in windows:
+    for start, end in merged:
         if len(out) >= _MAX_LLM_PAGE_CHARS:
             break
         out += (_TRUNCATION_MARKER + tail[start:end])[: _MAX_LLM_PAGE_CHARS - len(out)]
@@ -1770,7 +2050,9 @@ def _extract(html: str, url: str, school_name: str = "") -> dict:
     # earliest in the text is the row the keyword actually belongs to.
     if english_teacher_name is None:
         candidate = _earliest_valid_match(
-            text, (ENGLISH_TEACHER_RE, ENGLISH_TEACHER_NAME_FIRST_RE, ENGLISH_TEACHER_ROLE_LIST_RE)
+            text,
+            (ENGLISH_TEACHER_RE, ENGLISH_TEACHER_NAME_FIRST_RE, ENGLISH_TEACHER_ROLE_LIST_RE),
+            achievement_guard=True,
         )
         if candidate and not _is_patron_name(candidate, patron_tokens):
             english_teacher_name = candidate
@@ -1781,7 +2063,11 @@ def _extract(html: str, url: str, school_name: str = "") -> dict:
         "emails": candidate_emails,
         "phone": phone,
         "source_url": url,
-        "subpage_links": _find_subpage_links(soup, url, school_name),
+        # Links resolve against where the fetch LANDED, not what was asked
+        # for -- see _note_final_url. Only the link base is rebased; the
+        # record's own source_url stays the requested URL so the crawl's
+        # visited/dedup bookkeeping is unaffected.
+        "subpage_links": _find_subpage_links(soup, _final_url_for(url) or url, school_name),
         "email_cloak_detected": email_cloak_detected,
         "content_fingerprint": content_fingerprint,
         # Speciality is derived from the school's official NAME only (seeded
@@ -1959,7 +2245,39 @@ def _merge(result: dict, found: dict, *, tier: int = 0, third_party: bool = Fals
         result["source_url"] = found["source_url"]
 
 
-def _is_complete(result: dict) -> bool:
+# Tiers whose pages ARE the staff roster: BIP (0), the "nauczyciele / kadra
+# / grono pedagogiczne / dyrektor" tier (1), and the entrance to the
+# school's own subsite on a shared hub domain (-1). See
+# SUBPAGE_KEYWORDS_BY_PRIORITY.
+_STAFF_PAGE_MAX_TIER = 1
+
+# A NEWS HEADLINE that merely mentions a role word earns the staff tier from
+# its slug alone -- confirmed directly: sp31.bydgoszcz.pl publishes
+# "/pioro-dyrektora-szkoly/" and "/konkurs-ortograficzny-o-pioro-dyrektora-
+# szkoly-wyniki/" (a writing competition named after the head teacher), which
+# match the tier-1 "dyrektor" keyword. Fetching those is pre-existing
+# behaviour, but they must not HOLD THE GATE below open: doing so spends the
+# page budget on prize write-ups and can push the real roster out of the
+# LLM's 8-page window, turning a fix for missed teachers into a cause of
+# them. Competition vocabulary in a URL is a reliable tell, and it costs
+# nothing if wrong -- the page is still crawled at its own tier, it just
+# stops being a reason to keep crawling.
+_NEWS_SLUG_RE = re.compile(r"(?i:konkurs|laureat|olimpiad|wyniki|gratulacj)")
+
+
+def _staff_page_pending(frontier: list[tuple[int, str]], visited: set[str]) -> bool:
+    """True while a staff-roster page is queued but still unread. Used to
+    hold _is_complete open -- see its own docstring for why."""
+    for tier, url in frontier:
+        if tier > _STAFF_PAGE_MAX_TIER or _dedup_key(url) in visited:
+            continue
+        if _NEWS_SLUG_RE.search(url):
+            continue
+        return True
+    return False
+
+
+def _is_complete(result: dict, *, staff_page_pending: bool = False) -> bool:
     # Only a PERSONAL-candidate address (priority 0 -- an unrecognized
     # local part that may be someone's own box) ends the crawl early.
     # This used to stop on any office-tier address too, which directly
@@ -1973,6 +2291,23 @@ def _is_complete(result: dict) -> bool:
     # school that DOES publish personal addresses is exactly the school
     # worth the extra pages. (Final personal-vs-generic attribution still
     # happens after the crawl, in jobs.py.)
+    #
+    # The names this checks are REGEX-derived, and regex names are never
+    # written to a school record -- only an LLM record grounded in a verbatim
+    # page quote is (see jobs.py). So the crawl's real product is the set of
+    # pages handed to the LLM, and a name too weak to write must not be
+    # strong enough to end the page budget. Confirmed directly: on
+    # psp.bialystok.pl the homepage's prize-winners list yielded a "teacher"
+    # who was actually a pupil, which satisfied this check two pages in and
+    # stopped the crawl -- so /teachers/, the page that really does name the
+    # English teacher (Agnieszka Konopka, "Język angielski / Science in
+    # English"), was queued at tier 1 and never fetched. The LLM then had no
+    # page that could prove a teacher, and the school ended up with none.
+    # Holding out while any staff-roster page is still unread is bounded
+    # (MAX_SAME_SITE_PAGES caps the crawl regardless) and cheap: those pages
+    # are few, and they are exactly the ones worth spending budget on.
+    if staff_page_pending:
+        return False
     emails = result.get("all_emails") or set()
     personal_candidate = bool(emails) and min((email_priority(e) for e in emails), default=2) < 1
     return bool(result["director_name"] and result["english_teacher_name"] and personal_candidate)
@@ -2036,7 +2371,11 @@ def _scrape_with_browser(homepage: str, school_name: str, result: dict, sources_
                 _merge(result, found, tier=HOMEPAGE_TIER)
                 frontier: list[tuple[int, str]] = list(found["subpage_links"])
 
-                while frontier and pages_rendered < MAX_RENDERED_PAGES and not _is_complete(result):
+                while (
+                    frontier
+                    and pages_rendered < MAX_RENDERED_PAGES
+                    and not _is_complete(result, staff_page_pending=_staff_page_pending(frontier, visited))
+                ):
                     frontier.sort(key=lambda pair: pair[0])
                     tier, link = frontier.pop(0)
                     if _dedup_key(link) in visited:
@@ -2143,8 +2482,50 @@ def _derive_website_from_email(email: str | None) -> str | None:
     return f"http://{domain}"
 
 
+def _picked_staff_links(
+    staff_page_picker, html: str, base_url: str, school_name: str, city: str | None
+) -> list[str]:
+    """Run the injected LLM nav-picker over a page's raw link list.
+
+    Injected rather than imported: llm_extract imports THIS module, so
+    calling it from here directly would be a cycle -- and keeping the
+    dependency inverted also means the crawler stays runnable (and
+    testable) with no LLM at all, which the offline fallback path relies
+    on. Any failure inside the picker is swallowed: a nav-picking miss
+    must never take down a crawl that keyword tiering could still finish.
+    """
+    try:
+        candidates = all_candidate_links(BeautifulSoup(html, "html.parser"), base_url)
+        if not candidates:
+            return []
+        offered = {url for _, url in candidates}
+        picked = staff_page_picker(candidates, school_name, city) or []
+        # Enforced HERE, not only inside the LLM implementation: this is the
+        # boundary where an outside-supplied callable gets to influence what
+        # the crawler fetches, so the allow-list has to hold whatever the
+        # picker is. Anything not offered is discarded rather than visited.
+        return [url for url in picked if url in offered]
+    except Exception:  # noqa: BLE001 -- see docstring; UsageLimitError is re-raised below
+        if _is_usage_limit_error():
+            raise
+        return []
+
+
+def _is_usage_limit_error() -> bool:
+    """True when the exception currently being handled is the LLM
+    usage-window exhaustion that run_job must stop the whole batch on --
+    matched by name so this module keeps no import of llm_extract."""
+    exc = sys.exc_info()[1]
+    return exc is not None and type(exc).__name__ == "UsageLimitError"
+
+
 def scrape_school_website(
-    school_name: str, website_url: str | None, rspo_email: str | None = None
+    school_name: str,
+    website_url: str | None,
+    rspo_email: str | None = None,
+    *,
+    staff_page_picker=None,
+    city: str | None = None,
 ) -> dict:
     result = {
         "director_name": None,
@@ -2266,6 +2647,29 @@ def scrape_school_website(
             if not wrong_site:
                 sources_checked.append({"url": homepage, "status": "ok"})
                 migrated_domain = _detect_domain_migration(BeautifulSoup(html, "html.parser"), effective_homepage)
+                # A "migration" is only credible if the site we already have
+                # is NOT a working school site. Confirmed directly on
+                # liceum-technikum.roe.pl: its nav links out to its
+                # e-register six times, which outnumbered its own-domain
+                # links, so the crawl declared the school migrated to
+                # librus.pl and went crawling a software vendor -- while
+                # _verify_school_site(html) on the original page returned
+                # True the whole time. The cost is not just five wasted
+                # fetches: every address harvested over there is a vendor's,
+                # and three schools in stored data ended up with
+                # "sekretariat@librus.pl" as their office mailbox. A live,
+                # verified school site is never abandoned on link counts
+                # alone.
+                if migrated_domain and _verify_school_site(html):
+                    sources_checked.append(
+                        {
+                            "url": f"https://{migrated_domain}",
+                            "status": "skipped",
+                            "domain_migration": False,
+                            "reason": "base site verifies as a school site",
+                        }
+                    )
+                    migrated_domain = None
                 if migrated_domain:
                     migrated_url = f"https://{migrated_domain}"
                     migrated_html = fetch_page(migrated_url)
@@ -2370,7 +2774,38 @@ def scrape_school_website(
                 _merge(result, found, tier=HOMEPAGE_TIER)
                 _note_cloak(found)
                 frontier.extend(found["subpage_links"])
-                if not found["subpage_links"]:
+                # LLM NAV-PICKER. Keyword tiering can only find a roster
+                # whose label or slug happens to contain a word someone
+                # listed. When it finds no staff-roster candidate at all,
+                # ask the model to read the nav instead -- see
+                # llm_extract.pick_staff_pages for the failure shapes this
+                # covers (image-only navs, English-only labels, "?id=42"
+                # permalinks, a roster on the school's own other
+                # subdomain). Gated on tiering having come up empty, so the
+                # majority of schools -- where a "Kadra" link exists and
+                # matches -- pay nothing for it.
+                picked: list[str] = []
+                if staff_page_picker is not None and not _staff_page_pending(
+                    found["subpage_links"], visited
+                ):
+                    picked = _picked_staff_links(
+                        staff_page_picker, html, effective_homepage, school_name, city
+                    )
+                    for url in picked:
+                        if _dedup_key(url) not in visited:
+                            # Tier 0: a model that has read the whole nav
+                            # and named this page is a stronger signal than
+                            # any keyword match, and there is by definition
+                            # no real staff-tier link competing for the
+                            # budget here.
+                            frontier.append((0, url))
+                    if picked:
+                        sources_checked.append(
+                            {"url": effective_homepage, "status": "ok", "llm_nav_picked": picked}
+                        )
+                # Blind slug guessing is the last resort, so it is skipped
+                # when the picker just supplied real, model-chosen targets.
+                if not found["subpage_links"] and not picked:
                     base = effective_homepage.rstrip("/")
                     frontier.extend(
                         (0, f"{base}/{slug}") for slug in _level_hub_slugs_for(school_name)
@@ -2423,7 +2858,11 @@ def scrape_school_website(
                     }
                 )
 
-        while frontier and pages_fetched < MAX_SAME_SITE_PAGES and not _is_complete(result):
+        while (
+            frontier
+            and pages_fetched < MAX_SAME_SITE_PAGES
+            and not _is_complete(result, staff_page_pending=_staff_page_pending(frontier, visited))
+        ):
             frontier.sort(key=lambda pair: pair[0])
             tier, link = frontier.pop(0)
             if _dedup_key(link) in visited:

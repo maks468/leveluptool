@@ -365,6 +365,17 @@ Non-negotiable rules:
 - The school's patron/namesake (the person in "im. ..." / "imienia ...") is NEVER staff, even if their name appears prominently.
 - Recognize Polish role vocabulary: "dyrektor" = director, "wicedyrektor"/"zastępca dyrektora" = deputy_director, "nauczyciel języka angielskiego"/"nauczyciel j. angielskiego"/"anglista" (a teacher whose only or primary subject is English) = english_teacher. Some bilingual schools label roles in English directly ("English teacher", "Principal") -- recognize those the same way.
 - An empty "staff" list is a completely valid, honest answer when the given pages genuinely name none of these three roles -- never fabricate a record to avoid returning empty.
+
+NOT STAFF -- every one of these was observed on a real Polish school site sitting right next to the words "język angielski", and each would produce a WRONG contact. A wrong name is far worse than an empty answer:
+- PUPILS in competition or exam results: "Wojewódzki Konkurs Przedmiotowy ... Język Angielski: Karolina Brzozowska - tytuł laureata", "finalistka", "II miejsce", "dyplom", "gratulujemy". A subject heading above a list of prize-winners names children, not teachers.
+- JOB ADVERTS and application forms: "Poszukujemy nauczyciela języka angielskiego", "oferta pracy", "Wybierz stanowisko: Nauczyciel języka angielskiego". The post is VACANT -- nobody named nearby holds it.
+- PAST or OTHER employment in a biography: "pracowała jako nauczycielka języka angielskiego w latach ...", "during her studies she taught English". Only a CURRENT role at THIS school counts.
+- A QUALIFICATION that the same passage then contradicts: "z wykształcenia jestem iberystką i anglistką ... uczę hiszpańskiego" -- she teaches Spanish. Being trained in English is not teaching it; an explicit statement of what someone teaches always wins.
+- GUESTS and outsiders: workshop presenters ("Jak pomóc dziecku w nauce angielskiego - mgr Alicja Gromadzka"), competition jurors, Erasmus experts, visiting native speakers billed as an event.
+- A CLASS TUTOR with no subject named: "Klasa 4A - Anna Nowak" states who the form tutor is, not what they teach.
+- A person at a DIFFERENT institution sharing the website: "anglistki w naszym przedszkolu" on a site covering both a kindergarten and a school is evidence about the kindergarten. If the passage names a different institution than the school given above, do not output the record.
+- PURELY ADMINISTRATIVE titles: "Head of English Section", "koordynator", "metodyk" describe managing or advising, not teaching. Output such a person only if the text separately says they teach English.
+- An email PATTERN rather than an address: "firstname.lastname@school.pl", "imie.nazwisko@...". Never assemble an address from a pattern.
 """
 
 _VISION_SYSTEM_PROMPT = """You read an image or a scanned/exported PDF page from a Polish school's staff roster and extract staff contact information.
@@ -671,6 +682,88 @@ def extract_contacts(
         logger.warning("llm_extract: unparseable JSON from model %s", model)
         return None
     return _validate_extraction(raw)
+
+
+_NAV_PICK_SYSTEM_PROMPT = """You are given the navigation links of one Polish school's website, and the school's official name. Your only job is to say which links most likely lead to a page LISTING TEACHING STAFF -- the page that names individual teachers and ideally the subjects they teach.
+
+What such a page is usually called, in any of these forms: "Kadra", "Kadra pedagogiczna", "Grono pedagogiczne", "Nauczyciele", "Nasi nauczyciele", "Nasz zespol", "Rada pedagogiczna", "Pracownicy", "Wychowawcy", "Specjalisci", or in English "Our Team", "Staff", "Teachers", "Faculty", "Meet the team". A page naming ONLY the head teacher ("Dyrekcja", "Dyrektor") is worth much less than one listing the whole teaching body -- rank it lower, but still include it if nothing better exists.
+
+Rules:
+- Judge by the visible label AND the URL slug together. An opaque URL with a telling label counts, and a telling slug with an empty label counts.
+- The links may include other hostnames. Include one ONLY if it plainly belongs to THIS school (its own subdomain or its own branded domain). Never pick a different school, a municipal/ministry portal, a parish, a newspaper, an e-register login (Librus, Vulcan, edupage login), or social media.
+- Never pick news items, competition results, timetables, calendars, galleries, recruitment forms, RODO/privacy notices, or document archives.
+- Pick nothing rather than something irrelevant. An empty list is a valid, useful answer.
+
+Return ONLY minified JSON, no prose, no markdown fence:
+{"pages":[{"url":"<exact url as given>","why":"<max 8 words>"}]}
+At most 4 entries, best first."""
+
+
+def pick_staff_pages(
+    links: list[tuple[str, str]],
+    school_name: str,
+    city: str | None = None,
+    *,
+    max_links: int = 90,
+    max_results: int = 4,
+    model: str = HAIKU_MODEL,
+    usage_out: dict | None = None,
+) -> list[str]:
+    """Ask the model which of a site's links lead to its teaching-staff
+    roster. `links` is (label, url) pairs as scraped, in document order.
+
+    This is the LLM-led answer to the crawl's single biggest miss: keyword
+    tiering only finds a roster whose label or slug contains a word someone
+    thought to list. Auditing 44 high-scoring schools that reached "basic"
+    enrichment found the roster was reachable but untiered on many of them
+    -- an image-only nav, an English-only nav ("Our Team"), a bare
+    "?id=42" permalink, or a roster on the school's own other subdomain.
+    A model reading the nav handles all of those shapes at once, where each
+    would otherwise need its own heuristic.
+
+    Returns [] on ANY failure (no SDK, unparseable, timeout) so the caller
+    simply proceeds with keyword tiering -- never raises except
+    UsageLimitError, which must stop the batch (see module docstring).
+    Only URLs present in the input are returned, so the model cannot
+    invent a destination."""
+    if not SDK_AVAILABLE or not links:
+        return []
+    trimmed = links[:max_links]
+    lines = [
+        f"{i}. label={label[:70]!r} url={url}"
+        for i, (label, url) in enumerate(trimmed, 1)
+    ]
+    where = f" in {city}" if city else ""
+    prompt = (
+        f"School: {school_name}{where}\n\n"
+        f"Links found on its website:\n" + "\n".join(lines)
+    )
+    try:
+        text, usage = _run_sync(
+            _run_query(prompt, system_prompt=_NAV_PICK_SYSTEM_PROMPT, model=model, allowed_tools=[])
+        )
+    except CliUnavailableError:
+        return []
+    if usage_out is not None:
+        usage_out.update(usage)
+    if not text:
+        return []
+    raw = _parse_json_response(text)
+    if not isinstance(raw, dict):
+        return []
+    allowed = {url for _, url in trimmed}
+    picked: list[str] = []
+    for entry in raw.get("pages") or []:
+        if not isinstance(entry, dict):
+            continue
+        url = entry.get("url")
+        # Only echo back URLs we actually offered -- a hallucinated or
+        # subtly-edited URL would send the crawl somewhere unverified.
+        if isinstance(url, str) and url in allowed and url not in picked:
+            picked.append(url)
+        if len(picked) >= max_results:
+            break
+    return picked
 
 
 def extract_from_image(

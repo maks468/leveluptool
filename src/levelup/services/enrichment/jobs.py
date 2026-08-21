@@ -481,7 +481,19 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
     if not school.website_url and rspo_info.get("website"):
         school.website_url = rspo_info.get("website")
 
-    result = scrape_school_website(school.name, effective_website, rspo_email=rspo_info.get("email"))
+    # The LLM nav-picker is injected, not imported by the crawler (which
+    # llm_extract itself imports -- see scraper._picked_staff_links). It is
+    # only consulted when keyword tiering finds no staff-roster link at
+    # all, and is passed only when the CLI is actually usable, so a
+    # container without working credentials crawls exactly as before.
+    picker = llm_extract.pick_staff_pages if llm_extract.is_llm_usable() else None
+    result = scrape_school_website(
+        school.name,
+        effective_website,
+        rspo_email=rspo_info.get("email"),
+        staff_page_picker=picker,
+        city=school.city,
+    )
     _mark("crawl")
 
     # Special-education population(s) detected from the site,

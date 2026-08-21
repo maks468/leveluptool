@@ -170,6 +170,27 @@ THIRD_PARTY_VENDOR_DOMAINS = (
     "adametronics.pl",
     "perfectinfo.pl",
     "zontekiwspolnicy.pl",
+    # E-REGISTER AND EXAM-AUTHORITY DOMAINS. Every Polish school links its
+    # electronic register (Librus, Vulcan) and the exam board, and those
+    # sites publish their OWN "sekretariat@" address -- which the crawl
+    # then picks up as if it were the school's office mailbox. Confirmed
+    # in stored data: three schools were carrying "sekretariat@librus.pl"
+    # and two "sekretariat@cke.gov.pl" as their office contact, i.e. mail
+    # to them would have reached a software vendor and the national
+    # examination commission instead of the school.
+    #
+    # Deliberately NOT listed: the school-website hosting providers
+    # (szkolnastrona.pl, superszkolna.pl, home.pl, nazwa.pl). A school's
+    # real mailbox genuinely lives on a subdomain there
+    # ("sekretariat@sp1lowicz.szkolnastrona.pl"), so blanketing the
+    # provider would throw away 14 correct addresses to remove none.
+    "librus.pl",
+    "vulcan.edu.pl",
+    "vulcan.pl",
+    "cke.gov.pl",
+    "edupage.org",
+    "men.gov.pl",
+    "ore.edu.pl",
 )
 
 
