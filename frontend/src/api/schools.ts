@@ -104,6 +104,15 @@ export interface DirectoryQuery {
   q?: string
   status?: "all" | "available" | "pipeline" | "campaign"
   campaignId?: number | null
+  voivodeship?: string | null
+  city?: string | null
+  schoolType?: string
+  ownership?: "all" | "public" | "private"
+  studentsMin?: number | null
+  studentsMax?: number | null
+  scoreMin?: number | null
+  scoreMax?: number | null
+  enrichment?: string
   sort?: string
   page?: number
   pageSize?: number
@@ -115,6 +124,15 @@ export async function listDirectory(args: DirectoryQuery = {}): Promise<Director
   if (args.q) params.set("q", args.q)
   if (args.status && args.status !== "all") params.set("status", args.status)
   if (args.campaignId !== null && args.campaignId !== undefined) params.set("campaign_id", String(args.campaignId))
+  if (args.voivodeship) params.set("voivodeship", args.voivodeship)
+  if (args.city) params.set("city", args.city)
+  if (args.schoolType && args.schoolType !== "all") params.set("school_type", args.schoolType)
+  if (args.ownership && args.ownership !== "all") params.set("ownership", args.ownership)
+  if (args.studentsMin !== null && args.studentsMin !== undefined) params.set("students_min", String(args.studentsMin))
+  if (args.studentsMax !== null && args.studentsMax !== undefined) params.set("students_max", String(args.studentsMax))
+  if (args.scoreMin !== null && args.scoreMin !== undefined) params.set("score_min", String(args.scoreMin))
+  if (args.scoreMax !== null && args.scoreMax !== undefined) params.set("score_max", String(args.scoreMax))
+  if (args.enrichment && args.enrichment !== "all") params.set("enrichment", args.enrichment)
   if (args.sort) params.set("sort", args.sort)
   params.set("page", String(args.page ?? 1))
   params.set("page_size", String(args.pageSize ?? 50))

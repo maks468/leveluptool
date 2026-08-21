@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Search } from "lucide-react"
-import { listDirectory } from "@/api/schools"
+import { listCities, listDirectory, listVoivodeships } from "@/api/schools"
 import { listCampaigns } from "@/api/campaigns"
 import { queryKeys } from "@/api/queryKeys"
 import { Badge } from "@/components/ui/Badge"
@@ -14,6 +14,28 @@ import { LEVEL_LABELS, type DirectoryEntry, type DirectoryStatus } from "@/types
 
 const PAGE_SIZE = 50
 
+// Same vocabulary as the Library's panel, so the two pages read alike.
+const SCHOOL_TYPE_OPTIONS = [
+  { value: "all", label: "All types" },
+  { value: "primary", label: "Primary" },
+  { value: "secondary", label: "Secondary (liceum + technikum)" },
+  { value: "liceum", label: "Liceum only" },
+  { value: "technikum", label: "Technikum only" },
+  { value: "vocational", label: "Vocational" },
+] as const
+
+const ENRICHMENT_OPTIONS = [
+  { value: "all", label: "Any enrichment" },
+  { value: "enriched", label: "Enriched — contacts found" },
+  { value: "not_enriched", label: "Not enriched" },
+  { value: "successful", label: "· Successful" },
+  { value: "successful_teacher", label: "· Teacher email — top priority" },
+  { value: "partial", label: "· Partial" },
+  { value: "basic", label: "· Basic" },
+  { value: "attempted", label: "Attempted" },
+  { value: "never_attempted", label: "Never attempted" },
+] as const
+
 /** The full register, read-only: every school and where it currently
  * lives -- Available (still in the Library pool), Pipeline (with its
  * stage), or the campaign it's parked in. Nothing ever disappears from
@@ -23,15 +45,44 @@ export function DirectoryPage() {
   const [search, setSearch] = useState("")
   const [status, setStatus] = useState<"all" | DirectoryStatus>("all")
   const [campaignId, setCampaignId] = useState<number | null>(null)
+  const [voivodeship, setVoivodeship] = useState<string | null>(null)
+  const [city, setCity] = useState<string | null>(null)
+  const [schoolType, setSchoolType] = useState("all")
+  const [ownership, setOwnership] = useState<"all" | "public" | "private">("all")
+  const [studentsMin, setStudentsMin] = useState<number | null>(null)
+  const [studentsMax, setStudentsMax] = useState<number | null>(null)
+  const [scoreMin, setScoreMin] = useState<number | null>(null)
+  const [scoreMax, setScoreMax] = useState<number | null>(null)
+  const [enrichment, setEnrichment] = useState("all")
   const [page, setPage] = useState(1)
   const [selectedId, setSelectedId] = useState<number | null>(null)
 
   const { data: campaigns = [] } = useQuery({ queryKey: queryKeys.campaigns(), queryFn: listCampaigns })
+  // "register" scope: the Directory shows every school, so its region
+  // dropdowns must list every region -- unlike the Library's, which are
+  // scoped to the available pool.
+  const { data: voivodeships = [] } = useQuery({
+    queryKey: ["voivodeships", "register"],
+    queryFn: () => listVoivodeships("register"),
+  })
+  const { data: cities = [] } = useQuery({
+    queryKey: ["cities", voivodeship, "register"],
+    queryFn: () => listCities(voivodeship, "register"),
+  })
 
   const args = {
     q: search || undefined,
     status: campaignId !== null ? ("campaign" as const) : status,
     campaignId,
+    voivodeship,
+    city,
+    schoolType,
+    ownership,
+    studentsMin,
+    studentsMax,
+    scoreMin,
+    scoreMax,
+    enrichment,
     page,
     pageSize: PAGE_SIZE,
   }
@@ -66,7 +117,7 @@ export function DirectoryPage() {
         </div>
         {data && (
           <span className="text-xs text-[var(--color-text-muted)]">
-            {data.register_total.toLocaleString()} schools &middot; {data.counts.available.toLocaleString()} available
+            {data.register_total.toLocaleString()} matching &middot; {data.counts.available.toLocaleString()} available
             &middot; {data.counts.pipeline.toLocaleString()} in pipeline &middot;{" "}
             {data.counts.campaign.toLocaleString()} in campaigns
           </span>
@@ -112,6 +163,94 @@ export function DirectoryPage() {
             </option>
           ))}
         </select>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
+          value={voivodeship ?? ""}
+          onChange={(e) => { setVoivodeship(e.target.value || null); setCity(null); setPage(1) }}
+        >
+          <option value="">Any voivodeship</option>
+          {voivodeships.map((v) => (
+            <option key={v.voivodeship} value={v.voivodeship}>{v.voivodeship}</option>
+          ))}
+        </select>
+        <select
+          className="max-w-44 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
+          value={city ?? ""}
+          onChange={(e) => { setCity(e.target.value || null); setPage(1) }}
+        >
+          <option value="">Any city</option>
+          {cities.map((c) => (
+            <option key={c.city} value={c.city}>{c.city}</option>
+          ))}
+        </select>
+        <select
+          className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
+          value={schoolType}
+          onChange={(e) => { setSchoolType(e.target.value); setPage(1) }}
+        >
+          {SCHOOL_TYPE_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+        <select
+          className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
+          value={ownership}
+          onChange={(e) => { setOwnership(e.target.value as typeof ownership); setPage(1) }}
+        >
+          <option value="all">Any ownership</option>
+          <option value="public">Public</option>
+          <option value="private">Private</option>
+        </select>
+        <div className="flex items-center gap-1 text-sm">
+          <span className="text-xs text-[var(--color-text-muted)]">Students</span>
+          <input type="number" placeholder="Min" min={0}
+            className="w-16 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-sm"
+            value={studentsMin ?? ""}
+            onChange={(e) => { setStudentsMin(e.target.value === "" ? null : Number(e.target.value)); setPage(1) }} />
+          <span className="text-[var(--color-text-muted)]">–</span>
+          <input type="number" placeholder="Max" min={0}
+            className="w-16 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-sm"
+            value={studentsMax ?? ""}
+            onChange={(e) => { setStudentsMax(e.target.value === "" ? null : Number(e.target.value)); setPage(1) }} />
+        </div>
+        <div className="flex items-center gap-1 text-sm">
+          <span className="text-xs text-[var(--color-text-muted)]">Score</span>
+          <input type="number" placeholder="Min" min={0} max={100}
+            className="w-16 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-sm"
+            value={scoreMin ?? ""}
+            onChange={(e) => { setScoreMin(e.target.value === "" ? null : Number(e.target.value)); setPage(1) }} />
+          <span className="text-[var(--color-text-muted)]">–</span>
+          <input type="number" placeholder="Max" min={0} max={100}
+            className="w-16 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-sm"
+            value={scoreMax ?? ""}
+            onChange={(e) => { setScoreMax(e.target.value === "" ? null : Number(e.target.value)); setPage(1) }} />
+        </div>
+        <select
+          className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
+          value={enrichment}
+          onChange={(e) => { setEnrichment(e.target.value); setPage(1) }}
+        >
+          {ENRICHMENT_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+        {(voivodeship || city || schoolType !== "all" || ownership !== "all" || studentsMin !== null ||
+          studentsMax !== null || scoreMin !== null || scoreMax !== null || enrichment !== "all") && (
+          <button
+            type="button"
+            className="text-xs text-[var(--color-accent)] hover:underline"
+            onClick={() => {
+              setVoivodeship(null); setCity(null); setSchoolType("all"); setOwnership("all")
+              setStudentsMin(null); setStudentsMax(null); setScoreMin(null); setScoreMax(null)
+              setEnrichment("all"); setPage(1)
+            }}
+          >
+            Clear filters
+          </button>
+        )}
       </div>
 
       <div className="overflow-x-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)]">

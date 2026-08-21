@@ -24,11 +24,14 @@ def session():
     db = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
     db.add(User(id=1, display_name="Owner", email=None))
     db.add(Campaign(id=1, name="September wave", owner_id=1))
-    for school_id, name, city in (
-        (1, "SP AVAILABLE", "Radom"), (2, "SP PURSUED", "Radom"), (3, "SP PARKED", "Opole"),
+    for school_id, name, city, level, private, students in (
+        (1, "SP AVAILABLE", "Radom", SchoolLevel.PRIMARY, True, 120),
+        (2, "SP PURSUED", "Radom", SchoolLevel.PRIMARY, False, 480),
+        (3, "SP PARKED", "Opole", SchoolLevel.LICEUM, True, 260),
     ):
         db.add(School(id=school_id, rspo_id=str(school_id), name=name, city=city,
-                      level=SchoolLevel.PRIMARY, raw_import_row={}))
+                      level=level, is_private=private, student_count=students,
+                      raw_import_row={}))
     db.add(PipelineState(school_id=2, owner_id=1, stage=PipelineStage.CONTACTED))
     db.add(CampaignSchool(campaign_id=1, school_id=3, stage_at_move="not_contacted"))
     db.commit()
@@ -39,7 +42,12 @@ def session():
 def call(session, **overrides):
     """Direct endpoint call: FastAPI's Query(...) defaults are sentinel
     objects outside HTTP, so every parameter is passed explicitly."""
-    kwargs = dict(q=None, status="all", campaign_id=None, sort="name:asc", page=1, page_size=50)
+    kwargs = dict(
+        q=None, status="all", campaign_id=None, voivodeship=None, city=None,
+        school_type=None, ownership="all", students_min=None, students_max=None,
+        score_min=None, score_max=None, enrichment="all",
+        sort="name:asc", page=1, page_size=50,
+    )
     kwargs.update(overrides)
     return directory(session=session, **kwargs)
 
@@ -67,3 +75,30 @@ def test_directory_status_and_search_filters(session):
     assert set(by_name(call(session, q="opole"))) == {"SP PARKED"}
     # Counts describe the whole register regardless of the active filter.
     assert call(session, status="pipeline").counts["available"] == 1
+
+
+def test_directory_attribute_filters_answer_population_questions(session):
+    # "How many private primary schools are there?" -- one, and it's free.
+    result = call(session, school_type="primary", ownership="private")
+    assert result.total == 1 and result.counts == {"available": 1, "pipeline": 0, "campaign": 0}
+    assert result.items[0].name == "SP AVAILABLE"
+
+    # Public schools: just the pursued one.
+    assert {i.name for i in call(session, ownership="public").items} == {"SP PURSUED"}
+    # Level filter reaches the parked liceum, and the counts follow the slice.
+    liceum = call(session, school_type="liceum")
+    assert {i.name for i in liceum.items} == {"SP PARKED"}
+    assert liceum.counts == {"available": 0, "pipeline": 0, "campaign": 1}
+    # Students range.
+    assert {i.name for i in call(session, students_min=200, students_max=300).items} == {"SP PARKED"}
+    # Region.
+    assert {i.name for i in call(session, voivodeship=None, city="Radom").items} == {"SP AVAILABLE", "SP PURSUED"}
+
+
+def test_directory_attribute_and_status_filters_compose(session):
+    # Private schools that are parked in a campaign: only the liceum.
+    result = call(session, ownership="private", status="campaign")
+    assert {i.name for i in result.items} == {"SP PARKED"}
+    # The header counts still describe the whole private slice, not just
+    # the status-narrowed rows.
+    assert result.counts == {"available": 1, "pipeline": 0, "campaign": 1}

@@ -212,7 +212,7 @@ export interface VoivodeshipFacet {
   count: number
 }
 
-export type FacetScope = "library" | "pipeline"
+export type FacetScope = "library" | "pipeline" | "register"
 
 export type DirectoryStatus = "available" | "pipeline" | "campaign"
 

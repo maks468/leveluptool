@@ -667,6 +667,8 @@ def _scope_to_facet_query(query, scope: str):
     showing its original nationwide count. "pipeline" is the mirror image:
     counts only schools that ARE in the pipeline, for the Pipeline page's
     own filters."""
+    if scope == "register":
+        return query  # the Directory's full-register view -- no assignment filter
     if scope == "pipeline":
         return query.join(PipelineState, PipelineState.school_id == School.id)
     # "library" = the available pool, so campaign members are gone from
@@ -713,6 +715,15 @@ def directory(
     q: str | None = Query(None, description="Search school name or city"),
     status: str = Query("all", description="all|available|pipeline|campaign"),
     campaign_id: int | None = None,
+    voivodeship: str | None = None,
+    city: str | None = None,
+    school_type: str | None = Query(None, description="primary|secondary|liceum|technikum|vocational"),
+    ownership: str = Query("all", description="all|public|private"),
+    students_min: int | None = None,
+    students_max: int | None = None,
+    score_min: int | None = None,
+    score_max: int | None = None,
+    enrichment: str = Query("all", description="same values as the Library's enrichment filter"),
     sort: str = "name:asc",
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
@@ -732,6 +743,35 @@ def directory(
         .filter(*TARGET_SCHOOL_CONDITIONS)
     )
 
+    # Attribute filters (the Library's own vocabulary) apply BEFORE the
+    # status counts, so the header answers questions like "how many private
+    # primary schools are there, and where do they live?" for exactly the
+    # slice being viewed. Only the status/campaign narrowing comes after.
+    if q:
+        like = f"%{q}%"
+        base = base.filter(or_(School.name.ilike(like), School.city.ilike(like)))
+    if voivodeship:
+        base = base.filter(School.voivodeship == voivodeship)
+    if city:
+        base = base.filter(School.city == city)
+    if school_type and school_type != "all":
+        base = base.filter(School.level.in_(SCHOOL_TYPE_LEVELS.get(school_type, [])))
+    if ownership == "public":
+        base = base.filter(School.is_private.is_(False))
+    elif ownership == "private":
+        base = base.filter(School.is_private.is_(True))
+    if students_min is not None:
+        base = base.filter(School.student_count >= students_min)
+    if students_max is not None:
+        base = base.filter(School.student_count <= students_max)
+    if score_min is not None:
+        base = base.filter(SchoolScore.total_score >= score_min)
+    if score_max is not None:
+        base = base.filter(SchoolScore.total_score <= score_max)
+    enrichment_predicate = _enrichment_predicate(enrichment)
+    if enrichment_predicate is not None:
+        base = base.filter(enrichment_predicate)
+
     counts = {
         "pipeline": base.filter(PipelineState.school_id.isnot(None)).count(),
         "campaign": base.filter(CampaignSchool.school_id.isnot(None)).count(),
@@ -739,9 +779,6 @@ def directory(
     total_register = base.count()
     counts["available"] = total_register - counts["pipeline"] - counts["campaign"]
 
-    if q:
-        like = f"%{q}%"
-        base = base.filter(or_(School.name.ilike(like), School.city.ilike(like)))
     if campaign_id is not None:
         base = base.filter(CampaignSchool.campaign_id == campaign_id)
     elif status == "available":
