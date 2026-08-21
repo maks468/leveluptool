@@ -900,6 +900,41 @@ def _decoded_text(resp: requests.Response) -> str:
     return resp.text
 
 
+# A 200 response whose BODY is a throttling notice, not the page. Confirmed
+# directly: edupage.org (2,417 schools in this register -- ~13% of it) answers
+# rapid crawling with HTTP 200 and an 84-byte body, "Your IP is temporarily
+# blocked because of too many requests." Treated as content, that block page
+# was recorded as an "ok" source AND handed to the LLM as one of the school's
+# eight page slots -- so a batch of edupage schools could each be marked
+# "enriched, nothing found" purely because the platform was throttling us.
+# Matched on a short body (real pages are far larger) plus the notice's own
+# wording, so a school page merely discussing blocked IPs can't trip it.
+_BLOCK_BODY_MAX_CHARS = 400
+_BLOCK_BODY_MARKERS = (
+    "temporarily blocked",
+    "too many requests",
+    "rate limit",
+    "zbyt wiele zapyta",  # PL, diacritic-safe prefix of "zapytań"
+)
+# Longer than the ordinary retry: a throttle needs time to clear, and this
+# only ever fires on a confirmed block.
+_BLOCK_RETRY_DELAY_SECONDS = 6.0
+
+
+_MIN_LLM_PAGE_CHARS = 120
+
+
+def _normalize_ws_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _is_block_page(text: str | None) -> bool:
+    if not text or len(text) > _BLOCK_BODY_MAX_CHARS:
+        return False
+    lowered = text.lower()
+    return any(marker in lowered for marker in _BLOCK_BODY_MARKERS)
+
+
 _FETCH_RETRY_DELAY_SECONDS = 1.5
 # Was a flat 15s. Real school hosts either answer in a couple of seconds or
 # are dead; 15s just parked the (serial) crawler on hopeless hosts. Env-
@@ -949,7 +984,16 @@ def fetch_page(url: str) -> str | None:
         try:
             resp = _http_session().get(url, timeout=FETCH_TIMEOUT_SECONDS)
             resp.raise_for_status()
-            return _decoded_text(resp)
+            text = _decoded_text(resp)
+            # A throttling notice is not this page -- back off once, then
+            # report unreachable rather than passing the notice downstream
+            # as if it were the school's content (see _is_block_page).
+            if _is_block_page(text):
+                if attempt == 0:
+                    time.sleep(_BLOCK_RETRY_DELAY_SECONDS)
+                    continue
+                return None
+            return text
         except requests.exceptions.SSLError:
             # Confirmed directly: some Polish school sites (e.g. lo2.lublin.eu)
             # serve an incomplete certificate chain (missing intermediate) --
@@ -1755,6 +1799,14 @@ def _merge(result: dict, found: dict, *, tier: int = 0, third_party: bool = Fals
                 result["js_app_shell"] = True
             else:
                 seen_fingerprints.setdefault(fingerprint, url)
+
+    # A page with almost no text cannot prove a name or a role, but it WOULD
+    # consume one of the eight per-school LLM page slots (llm_extract.
+    # cap_pages) and push out a real staff page. Cheap guard, kept small so
+    # a genuinely terse contact page ("Sekretariat: ... tel ... e-mail ...")
+    # still gets through.
+    if found.get("llm_text") and len(_normalize_ws_text(found["llm_text"])) < _MIN_LLM_PAGE_CHARS:
+        found = {**found, "llm_text": ""}
 
     if found.get("llm_text"):
         # Replace, don't duplicate -- a URL re-merged after the js_app_shell
