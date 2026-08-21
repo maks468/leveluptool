@@ -793,6 +793,7 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
         "sources_checked": sources_checked,
         "sources_checked_count": len(sources_checked),
         "sources_ok_count": sum(1 for s in sources_checked if s["status"] == "ok"),
+        "sources_rate_limited_count": sum(1 for s in sources_checked if s["status"] == "rate_limited"),
         **llm_stats,
     }
     log_activity(session, school_id=school.id, activity_type=ActivityType.ENRICHMENT_COMPLETED.value, metadata=metadata)
@@ -885,8 +886,24 @@ def run_job(job_id: int) -> None:
 
             try:
                 school = session.query(School).filter_by(id=item.school_id).one()
-                enrich_school(session, school, job_id=job_id, requested_by=job.requested_by)
-                item.status = "success"
+                summary = enrich_school(session, school, job_id=job_id, requested_by=job.requested_by)
+                # Fix for the edupage class of failure: a school whose crawl
+                # was RATE-LIMITED and which yielded nothing must not be
+                # stamped "success" -- that status permanently excludes it
+                # from auto-enrich's candidate pool, sealing a temporary
+                # platform throttle into a forever-empty school. "cancelled"
+                # (the usage-limit precedent) keeps it retryable. A throttled
+                # school that still found something keeps its success.
+                throttled = (summary or {}).get("sources_rate_limited_count", 0) > 0
+                found_anything = any(
+                    (summary or {}).get(k)
+                    for k in ("found_director_name", "found_english_teacher_name", "found_general_email")
+                )
+                if throttled and not found_anything:
+                    item.status = "cancelled"
+                    item.error_message = "site rate-limited the crawl -- retry later"
+                else:
+                    item.status = "success"
             except llm_extract.UsageLimitError as exc:
                 # The shared 5-hour Claude Code usage window is exhausted --
                 # this is NOT this school's failure, it's every remaining

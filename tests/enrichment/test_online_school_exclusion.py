@@ -99,3 +99,62 @@ def test_director_vocabulary_also_survives_a_long_page():
     out = _cap_for_llm(buried)
     assert "DYREKTOR SZKOŁY: Renata Karwowska" in out
     assert len(out) <= _MAX_LLM_PAGE_CHARS
+
+
+# --- Per-host throttle handling (fixes B + C + honest status) ----------------
+
+import time as _time
+
+from levelup.services.enrichment import scraper as _sc
+
+
+def _reset_host_state():
+    with _sc._host_lock:
+        _sc._host_last_request.clear()
+        _sc._host_cooldown_until.clear()
+        _sc._host_block_count.clear()
+
+
+def test_confirmed_block_puts_the_whole_domain_in_cooldown():
+    _reset_host_state()
+    _sc._note_host_blocked("https://sp51wroclaw.edupage.org/a/kadra")
+    # Any URL on the same registrable domain is now resting...
+    assert _sc.was_rate_limited("https://zsbratian.edupage.org/kontakt")
+    assert _sc._fetch_failure_status("https://inna.edupage.org/") == "rate_limited"
+    # ...but other domains are untouched.
+    assert not _sc.was_rate_limited("https://spbb.pl/kadra")
+    assert _sc._fetch_failure_status("https://spbb.pl/kadra") == "unreachable"
+    _reset_host_state()
+
+
+def test_repeat_blocks_double_the_cooldown():
+    _reset_host_state()
+    _sc._note_host_blocked("https://x.edupage.org/")
+    first = _sc._host_cooldown_until[_sc._host_key("https://x.edupage.org/")] - _time.monotonic()
+    _sc._note_host_blocked("https://y.edupage.org/")
+    second = _sc._host_cooldown_until[_sc._host_key("https://x.edupage.org/")] - _time.monotonic()
+    assert second > first * 1.8  # doubled (allowing timing slack)
+    _reset_host_state()
+
+
+def test_same_host_requests_are_paced_apart():
+    _reset_host_state()
+    start = _time.monotonic()
+    _sc._pace_host("https://paced.edupage.org/a")
+    _sc._pace_host("https://paced.edupage.org/b")  # must wait out the gap
+    elapsed = _time.monotonic() - start
+    assert elapsed >= _sc._HOST_MIN_GAP_SECONDS * 0.9
+    # A different domain pays no wait.
+    start = _time.monotonic()
+    _sc._pace_host("https://elsewhere.pl/a")
+    assert _time.monotonic() - start < 0.5
+    _reset_host_state()
+
+
+def test_cooldown_makes_fetch_fail_fast_without_a_request():
+    _reset_host_state()
+    _sc._note_host_blocked("https://blocked.edupage.org/")
+    start = _time.monotonic()
+    assert _sc.fetch_page("https://blocked.edupage.org/kadra") is None
+    assert _time.monotonic() - start < 0.5  # no network, no retry sleeps
+    _reset_host_state()

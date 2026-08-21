@@ -686,6 +686,13 @@ def _dedup_key(url: str) -> str:
     return f"{netloc}{path}"
 
 
+def _fetch_failure_status(url: str) -> str:
+    """The honest label for a failed fetch: a host resting after a
+    confirmed throttle is "rate_limited" (recoverable -- retry later), not
+    "unreachable" (dead site)."""
+    return "rate_limited" if was_rate_limited(url) else "unreachable"
+
+
 def _is_bip_url(url: str) -> bool:
     """True once a URL is already inside the BIP section (bip.school.pl,
     or school.pl/bip/...), as opposed to a link elsewhere that merely
@@ -928,6 +935,65 @@ def _normalize_ws_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+# --- Per-host throttle handling (fixes B + C) --------------------------------
+# One global 0.4s pause was tuned for POLITENESS, not for platforms: 2,417
+# schools in this register (~13%) live on edupage.org alone, so a batch can
+# cluster dozens of requests onto one host and trip its rate limiter -- which
+# answers HTTP 200 + "Your IP is temporarily blocked". Three cooperating
+# pieces, all keyed by REGISTRABLE domain and shared across the batch thread
+# and the auto-enrich thread:
+#   - pacing: a minimum gap between requests to the SAME domain, so the
+#     burst that triggers the block stops happening;
+#   - cooldown: after a CONFIRMED block, the whole domain rests (doubling
+#     on repeats) and further fetches to it fail fast instead of each
+#     paying a request + retry against a wall;
+#   - a was-throttled registry, so the crawl can record "rate_limited"
+#     (a recoverable outcome) instead of "unreachable" (a dead site).
+_HOST_MIN_GAP_SECONDS = 1.0
+_HOST_COOLDOWN_BASE_SECONDS = 300.0
+_host_lock = threading.Lock()
+_host_last_request: dict[str, float] = {}
+_host_cooldown_until: dict[str, float] = {}
+_host_block_count: dict[str, int] = {}
+
+
+def _host_key(url: str) -> str:
+    return _registrable_domain(urlparse(url).netloc)
+
+
+def _pace_host(url: str) -> None:
+    host = _host_key(url)
+    if not host:
+        return
+    with _host_lock:
+        wait = _host_last_request.get(host, 0.0) + _HOST_MIN_GAP_SECONDS - time.monotonic()
+    if wait > 0:
+        time.sleep(wait)
+    with _host_lock:
+        _host_last_request[host] = time.monotonic()
+
+
+def _host_in_cooldown(url: str) -> bool:
+    with _host_lock:
+        return time.monotonic() < _host_cooldown_until.get(_host_key(url), 0.0)
+
+
+def _note_host_blocked(url: str) -> None:
+    host = _host_key(url)
+    with _host_lock:
+        strikes = _host_block_count.get(host, 0) + 1
+        _host_block_count[host] = strikes
+        _host_cooldown_until[host] = time.monotonic() + _HOST_COOLDOWN_BASE_SECONDS * (2 ** (strikes - 1))
+    print(f"scraper: {host} rate-limited us (strike {strikes}) -- cooling down", flush=True)
+
+
+def was_rate_limited(url: str) -> bool:
+    """True when this URL's host is (still) resting after a confirmed
+    throttle -- lets callers log the honest outcome instead of
+    "unreachable"."""
+    return _host_in_cooldown(url)
+
+
 def _is_block_page(text: str | None) -> bool:
     if not text or len(text) > _BLOCK_BODY_MAX_CHARS:
         return False
@@ -980,18 +1046,25 @@ def fetch_page(url: str) -> str | None:
     in the same run), nor a permanent 4xx such as 404 (see
     _RETRYABLE_STATUSES) -- both only ever added a wasted request plus a
     sleep to a result that cannot change."""
+    if _host_in_cooldown(url):
+        # The host told us to go away recently -- don't pay a request (and
+        # a retry, and a sleep) to be told again. was_rate_limited() lets
+        # the caller record this as "rate_limited", not "unreachable".
+        return None
     for attempt in range(2):
         try:
+            _pace_host(url)
             resp = _http_session().get(url, timeout=FETCH_TIMEOUT_SECONDS)
             resp.raise_for_status()
             text = _decoded_text(resp)
-            # A throttling notice is not this page -- back off once, then
-            # report unreachable rather than passing the notice downstream
-            # as if it were the school's content (see _is_block_page).
+            # A throttling notice is not this page -- one in-run retry after
+            # a pause; a second block puts the whole HOST into cooldown so
+            # the rest of the batch stops walking into the same wall.
             if _is_block_page(text):
                 if attempt == 0:
                     time.sleep(_BLOCK_RETRY_DELAY_SECONDS)
                     continue
+                _note_host_blocked(url)
                 return None
             return text
         except requests.exceptions.SSLError:
@@ -1923,7 +1996,7 @@ def _render_page(browser, url: str, sources_checked: list[dict]) -> str | None:
         sources_checked.append({"url": url, "status": "ok", "rendered": True})
         return html
     except Exception:  # noqa: BLE001 -- one page failing must not sink the render pass
-        sources_checked.append({"url": url, "status": "unreachable", "rendered": True})
+        sources_checked.append({"url": url, "status": _fetch_failure_status(url), "rendered": True})
         return None
     finally:
         if page is not None:
@@ -2134,7 +2207,7 @@ def scrape_school_website(
                 website_url = candidate
                 result["discovered_website_url"] = candidate
             else:
-                sources_checked.append({"url": candidate, "status": "unreachable", "derived_from_email": True})
+                sources_checked.append({"url": candidate, "status": _fetch_failure_status(candidate), "derived_from_email": True})
 
     # 1. The school's own website: homepage, then same-site subpages,
     # prioritized (BIP > staff listings > kontakt > generic "about"). This
@@ -2187,7 +2260,7 @@ def scrape_school_website(
                     html = candidate_html
                     result["discovered_website_url"] = candidate
                 else:
-                    sources_checked.append({"url": candidate, "status": "unreachable", "derived_from_email": True})
+                    sources_checked.append({"url": candidate, "status": _fetch_failure_status(candidate), "derived_from_email": True})
 
         if html:
             if not wrong_site:
@@ -2206,10 +2279,10 @@ def scrape_school_website(
                         result["discovered_website_url"] = migrated_url
                     else:
                         sources_checked.append(
-                            {"url": migrated_url, "status": "unreachable", "domain_migration": True}
+                            {"url": migrated_url, "status": _fetch_failure_status(migrated_url), "domain_migration": True}
                         )
         elif not wrong_site:
-            sources_checked.append({"url": homepage, "status": "unreachable"})
+            sources_checked.append({"url": homepage, "status": _fetch_failure_status(homepage)})
             # NOTE: deliberately NOT gated on `_dedup_key(variant) not in
             # visited` -- _dedup_key() treats www/non-www as the same page
             # (so the crawl doesn't re-fetch a page it already HAS), but
@@ -2245,7 +2318,7 @@ def scrape_school_website(
                     effective_homepage = variant
                     visited.add(_dedup_key(effective_homepage))
                     break
-                sources_checked.append({"url": variant, "status": "unreachable", "hostname_fallback": True})
+                sources_checked.append({"url": variant, "status": _fetch_failure_status(variant), "hostname_fallback": True})
         # else: wrong_site with no better candidate found -- already fully
         # recorded above (not_a_school_site + the failed candidate attempt,
         # if any).
@@ -2393,7 +2466,7 @@ def scrape_school_website(
                     frontier[:] = [pair for pair in frontier if _same_organization_host(pair[1], link)]
                 frontier.extend(pair for pair in found["subpage_links"] if _dedup_key(pair[1]) not in visited)
             else:
-                sources_checked.append({"url": link, "status": "unreachable"})
+                sources_checked.append({"url": link, "status": _fetch_failure_status(link)})
 
         # Never found the school's own dedicated subsite. The hub page is
         # NOT used as a data source anymore (accuracy policy): a shared
@@ -2529,7 +2602,7 @@ def augment_with_web_search(school_name: str, city: str | None, result: dict, rs
                 sources_checked.append({"url": link, "status": "ok", "found_via_search": query})
                 _merge(result, _extract(html, link), third_party=True)
             else:
-                sources_checked.append({"url": link, "status": "unreachable", "found_via_search": query})
+                sources_checked.append({"url": link, "status": _fetch_failure_status(link), "found_via_search": query})
 
 
 def finalize_scrape_result(result: dict) -> dict:
