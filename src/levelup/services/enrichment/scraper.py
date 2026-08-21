@@ -1511,6 +1511,48 @@ def _english_teacher_from_entries(soup: BeautifulSoup, patron_tokens: set[str]) 
 # itself starve every other page out of the school-level budget.
 _MAX_LLM_PAGE_CHARS = 8_000
 
+# Role-aware truncation. A staff roster longer than the per-page budget used
+# to be cut blind at the head, so a school listing "JEZYK ANGIELSKI" late in
+# a long table had the role label removed before the model ever saw the page.
+# Measured on 35 crawled staff pages of teacher-less schools: 8 exceeded the
+# cap and 2 of those 8 mentioned English ONLY past the cut -- silently
+# unextractable. Now the head is kept AND windows around role vocabulary
+# found beyond it are appended, inside the same total budget, with a marker
+# so the model can see text was elided. Pages with no role vocabulary in the
+# tail keep the old contiguous behaviour exactly.
+_TRUNCATION_HEAD_CHARS = 6_000
+_TRUNCATION_WINDOW_CHARS = 500
+_TRUNCATION_MARKER = chr(10) + "[...]" + chr(10)
+_TRUNCATION_ROLE_RE = re.compile(r"angiel|dyrektor", re.IGNORECASE)
+
+
+def _cap_for_llm(text: str) -> str:
+    if len(text) <= _MAX_LLM_PAGE_CHARS:
+        return text
+    head, tail = text[:_TRUNCATION_HEAD_CHARS], text[_TRUNCATION_HEAD_CHARS:]
+
+    windows: list[list[int]] = []
+    for match in _TRUNCATION_ROLE_RE.finditer(tail):
+        start = max(0, match.start() - _TRUNCATION_WINDOW_CHARS)
+        end = min(len(tail), match.end() + _TRUNCATION_WINDOW_CHARS)
+        if windows and start <= windows[-1][1]:
+            windows[-1][1] = max(windows[-1][1], end)  # merge overlaps
+        else:
+            windows.append([start, end])
+        if sum(e - s for s, e in windows) >= _MAX_LLM_PAGE_CHARS - len(head):
+            break
+
+    if not windows:  # nothing role-relevant later on -- old contiguous cut
+        return text[:_MAX_LLM_PAGE_CHARS]
+
+    out = head
+    for start, end in windows:
+        if len(out) >= _MAX_LLM_PAGE_CHARS:
+            break
+        out += (_TRUNCATION_MARKER + tail[start:end])[: _MAX_LLM_PAGE_CHARS - len(out)]
+    return out
+
+
 
 def _prepare_page_for_llm(html: str, url: str) -> str:
     """Structure-preserving text for the LLM extraction call (see
@@ -1574,7 +1616,7 @@ def _prepare_page_for_llm(html: str, url: str) -> str:
     if media_links:
         text += "\n\nIMAGE_OR_PDF_LINKS:\n" + "\n".join(media_links)
 
-    return text[:_MAX_LLM_PAGE_CHARS]
+    return _cap_for_llm(text)
 
 
 def _extract(html: str, url: str, school_name: str = "") -> dict:

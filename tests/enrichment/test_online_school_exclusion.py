@@ -64,3 +64,38 @@ def test_real_pages_are_never_mistaken_for_a_block():
 def test_thin_page_threshold_is_small_enough_for_terse_contact_pages():
     terse = "Sekretariat: sekretariat@szkola.pl tel. 12 345 67 89 ul. Szkolna 1, 00-001 Miasto"
     assert len(terse) >= _MIN_LLM_PAGE_CHARS or _MIN_LLM_PAGE_CHARS <= 120
+
+
+# --- Role-aware truncation --------------------------------------------------
+# A staff roster longer than the per-page budget used to be cut blind at the
+# head, removing "JĘZYK ANGIELSKI" before the model saw it. Measured on 35
+# crawled staff pages of teacher-less schools: 8 exceeded the cap, and 2 of
+# those mentioned English ONLY past the cut.
+
+from levelup.services.enrichment.scraper import _MAX_LLM_PAGE_CHARS, _cap_for_llm
+
+
+def test_english_section_beyond_the_cap_is_preserved():
+    buried = ("nic tu nie ma. " * 700) + "JĘZYK ANGIELSKI | ANNA KOWALSKA" + (" inne treści." * 300)
+    assert len(buried) > _MAX_LLM_PAGE_CHARS
+    out = _cap_for_llm(buried)
+
+    assert len(out) <= _MAX_LLM_PAGE_CHARS  # budget still respected
+    assert "JĘZYK ANGIELSKI" in out
+    assert "ANNA KOWALSKA" in out  # the names next to the label come along
+    assert "[...]" in out  # elision is visible to the model
+
+
+def test_short_and_keywordless_pages_are_unchanged():
+    short = "Sekretariat: sekretariat@szkola.pl"
+    assert _cap_for_llm(short) == short
+    # Nothing role-relevant later on: identical to the old contiguous cut.
+    filler = "x" * (_MAX_LLM_PAGE_CHARS * 2)
+    assert _cap_for_llm(filler) == filler[:_MAX_LLM_PAGE_CHARS]
+
+
+def test_director_vocabulary_also_survives_a_long_page():
+    buried = ("tekst " * 1500) + "DYREKTOR SZKOŁY: Renata Karwowska" + (" ogon" * 500)
+    out = _cap_for_llm(buried)
+    assert "DYREKTOR SZKOŁY: Renata Karwowska" in out
+    assert len(out) <= _MAX_LLM_PAGE_CHARS
