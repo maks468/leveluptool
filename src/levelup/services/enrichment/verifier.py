@@ -201,6 +201,18 @@ def is_third_party_vendor_email(email: str | None) -> bool:
     return any(domain == v or domain.endswith("." + v) for v in THIRD_PARTY_VENDOR_DOMAINS)
 
 
+# A real top-level domain is at least two letters. Three stored addresses
+# ended in a one-letter TLD -- "biuro@zoltylatawiec.p",
+# "szkola@spsteszew.edu.p", "m.wlazlak-szal@brzegdolny.edu.p" -- which are
+# undeliverable, so storing them breaks the rule that a recorded address is
+# one you can actually write to.
+_DELIVERABLE_SHAPE_RE = re.compile(r"^[^@\s]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}$")
+
+
+def is_deliverable_shape(email: str | None) -> bool:
+    return bool(email and _DELIVERABLE_SHAPE_RE.match(email.strip()))
+
+
 def is_non_school_email(email: str | None) -> bool:
     """An address that reaches something OTHER than the school itself -- its
     data-protection officer or an outsourced compliance/IT/legal vendor. Such

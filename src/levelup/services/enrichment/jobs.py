@@ -17,15 +17,18 @@ from levelup.models.school import EvidenceSource, School
 from levelup.services.enrichment import llm_extract
 from levelup.services.enrichment.rspo_detail import fetch_rspo_detail, parse_director_and_contacts
 from levelup.services.enrichment.scraper import (
+    _COMMON_POLISH_FIRST_NAMES,
     _mentions_school_city,
     _normalize_name_order,
     finalize_scrape_result,
     scrape_school_website,
 )
 from levelup.services.enrichment.verifier import (
+    GENERIC_OFFICE_LOCAL_PARTS,
     campaign_email_tier,
     classify_contact_quality,
     email_level_hint,
+    is_deliverable_shape,
     is_non_school_email,
     is_personal_email_for,
 )
@@ -229,6 +232,32 @@ def _run_llm_extraction(result: dict, school: School, still_needed_roles: set[st
 _SCHOOL_NR_RE = re.compile(r"\bnr\.?\s*(\d+)\b", re.IGNORECASE)
 
 
+# ONE PERSON's mailbox, recognised without knowing whose. The office slot is
+# meant to be a monitored school inbox, but "i.kurowska@zsp1mm.pl" won it
+# over the school's own "zsp1mm@zsp1mm.pl" on a tie, and
+# "AKolakowska@eduwarszawa.pl" won it outright -- outreach for those schools
+# would land in one teacher's personal inbox.
+#
+# The test is deliberately narrow, because <word>.<word> is ALSO the shape of
+# a perfectly good office box: nsp.lubsko@, ksp.mlociny@, technikum.gdansk@
+# and szk.nazaretanek@ are all real school addresses. What separates them is
+# the FIRST token -- a single initial, or a name from the first-name list.
+# An unrecognised diminutive ("ela.ryznar@") is therefore missed rather than
+# guessed at, which is the safe direction: a demotion that fires wrongly
+# would throw away a real office address.
+def _looks_like_one_persons_mailbox(email: str) -> bool:
+    local = email.split("@")[0].lower()
+    parts = local.split(".")
+    if len(parts) != 2:
+        return False
+    head, tail = parts
+    if not head.isalpha() or not tail.isalpha():
+        return False
+    if head in GENERIC_OFFICE_LOCAL_PARTS or tail in GENERIC_OFFICE_LOCAL_PARTS:
+        return False
+    return len(head) == 1 or head in _COMMON_POLISH_FIRST_NAMES
+
+
 # A number attached to a COMPLEX marker is the complex's number, not the
 # school's. Confirmed directly: "SZKOŁA PODSTAWOWA NR 321" sits inside
 # "Zespół Szkolno-Przedszkolny nr 7", and its own secretariat address is
@@ -289,6 +318,7 @@ def pick_general_email(
     3. campaign_email_tier: office > unlabelled > recruitment-only.
     4. RSPO's registered address wins remaining ties as the authoritative
        source."""
+    candidates = [e for e in candidates if is_deliverable_shape(e)] or candidates
     if not candidates:
         return None
     name_match = _SCHOOL_NR_RE.search(school_name or "")
@@ -307,7 +337,8 @@ def pick_general_email(
             school_number and local_digits and school_number not in {d.lstrip("0") or d for d in local_digits}
         ) else 0
         rspo_tiebreak = 0 if email == rspo_email else 1
-        return (number_conflict, level_pref, campaign_email_tier(email), rspo_tiebreak)
+        personal = 1 if _looks_like_one_persons_mailbox(email) else 0
+        return (personal, number_conflict, level_pref, campaign_email_tier(email), rspo_tiebreak)
 
     return min(candidates, key=rank)
 

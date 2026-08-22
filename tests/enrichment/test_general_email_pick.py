@@ -86,3 +86,54 @@ def test_complex_markers_do_not_swallow_a_real_school_code():
     assert _strip_complex_number("zso12.kontakt") == ".kontakt"
     assert _strip_complex_number("sp350") == "sp350"
     assert _strip_complex_number("ssp11") == "ssp11"
+
+
+def test_one_persons_mailbox_never_wins_the_office_slot():
+    """Two real regressions: "i.kurowska@zsp1mm.pl" beat the school's own
+    "zsp1mm@zsp1mm.pl" on a tie, and "AKolakowska@eduwarszawa.pl" beat
+    "sekretariat.zsp7@eduwarszawa.pl" outright. Outreach for those schools
+    would have landed in one teacher's personal inbox."""
+    from levelup.services.enrichment.jobs import pick_general_email
+
+    assert pick_general_email(
+        ["i.kurowska@zsp1mm.pl", "zsp1mm@zsp1mm.pl"], "PRIMARY",
+        "ZESPÓŁ SZKOLNO-PRZEDSZKOLNY NR 1", None,
+    ) == "zsp1mm@zsp1mm.pl"
+    assert pick_general_email(
+        ["AKolakowska@eduwarszawa.pl", "sekretariat.zsp7@eduwarszawa.pl"], "PRIMARY",
+        "SZKOŁA PODSTAWOWA NR 321", None,
+    ) == "sekretariat.zsp7@eduwarszawa.pl"
+
+
+def test_school_abbreviation_plus_city_is_not_a_personal_mailbox():
+    """<word>.<word> is ALSO the shape of a real office box. Demoting these
+    would throw away correct addresses to fix nothing."""
+    from levelup.services.enrichment.jobs import _looks_like_one_persons_mailbox as personal
+
+    for office in (
+        "nsp.lubsko@wp.pl", "ksp.mlociny@fnrr.pl", "ssp.zary@op.pl",
+        "technikum.gdansk@teb-edukacja.pl", "szk.nazaretanek@o2.pl",
+        "sekretariat.zsp7@eduwarszawa.pl", "edukacja.domowa@montessori.gda.pl",
+    ):
+        assert not personal(office), office
+    for private in ("i.kurowska@zsp1mm.pl", "a.hermann@x.pl", "adam.orlikowski@legia.pl"):
+        assert personal(private), private
+
+
+def test_an_undeliverable_address_is_not_chosen():
+    """Three stored addresses ended in a one-letter TLD, e.g.
+    "biuro@zoltylatawiec.p" -- nothing can be sent to them."""
+    from levelup.services.enrichment.jobs import pick_general_email
+
+    got = pick_general_email(
+        ["biuro@zoltylatawiec.p", "fundacja@zoltylatawiec.pl"], "PRIMARY", "SZKOŁA", None
+    )
+    assert got == "fundacja@zoltylatawiec.pl"
+
+
+def test_an_undeliverable_only_candidate_is_still_returned_over_nothing():
+    """The filter must not empty the candidate list -- a malformed address
+    is still the only lead a human could correct."""
+    from levelup.services.enrichment.jobs import pick_general_email
+
+    assert pick_general_email(["biuro@zoltylatawiec.p"], "PRIMARY", "SZKOŁA", None) == "biuro@zoltylatawiec.p"
