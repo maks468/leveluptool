@@ -148,3 +148,41 @@ def test_undeliverable_person_addresses_are_not_attached():
         _resolve_email(None, ["m.wlazlak-szal@brzegdolny.edu.pl"], "Maria Wlazlak-Szal")
         == "m.wlazlak-szal@brzegdolny.edu.pl"
     )
+
+
+def test_an_office_mailbox_is_not_attached_to_a_person():
+    """The model pairs whatever address sits beside a name on a contact
+    page, which put "dyrekcja@spolecznaszkola.pl" on a director and
+    "sp10@gzo.nysa.pl" on another. Two harms: the export shows an office box
+    as that person's address, and since a person-claimed address leaves the
+    unclaimed pool, the office slot got whatever was left -- on one school
+    the private inbox "m.banasiak@gzo.nysa.pl"."""
+    from levelup.services.enrichment.jobs import _is_institutional_address as inst
+
+    for office in (
+        "dyrekcja@spolecznaszkola.pl",
+        "szkola@przyjazna-szkola.pl",
+        "sekretariat@sp18.edu.gdynia.pl",
+        "sp10@gzo.nysa.pl",
+        "kontakt@domotwarty.net",
+    ):
+        assert inst(office, "Anna Michoń"), office
+    # A person's own address is theirs, whatever else it resembles.
+    assert not inst("m.banasiak@gzo.nysa.pl", "Marek Banasiak")
+    assert not inst("a.nowak@szkola.pl", "Anna Nowak")
+
+
+def test_an_office_mailbox_is_not_returned_as_a_persons_email():
+    from levelup.services.enrichment.jobs import _resolve_email
+
+    class Rec:
+        name = "Anna Michoń"
+        email = "sp10@gzo.nysa.pl"
+
+    assert _resolve_email(Rec(), ["sp10@gzo.nysa.pl"], "Anna Michoń") is None
+    # ...but her own address still resolves.
+    class Own:
+        name = "Anna Michoń"
+        email = "a.michon@gzo.nysa.pl"
+
+    assert _resolve_email(Own(), [], "Anna Michoń") == "a.michon@gzo.nysa.pl"

@@ -26,6 +26,7 @@ from levelup.services.enrichment.scraper import (
 from levelup.services.enrichment.verifier import (
     GENERIC_OFFICE_LOCAL_PARTS,
     campaign_email_tier,
+    email_priority,
     classify_contact_quality,
     email_level_hint,
     is_deliverable_shape,
@@ -107,12 +108,31 @@ def _resolve_email(record, all_emails: list[str], name: str | None) -> str | Non
     # An address nothing can be sent to is not a contact. One school stored
     # its director as "m.wlazlak-szal@brzegdolny.edu.p" -- a one-letter TLD.
     if record is not None and record.email and _same_person(record.name, name):
-        if is_deliverable_shape(record.email):
+        if is_deliverable_shape(record.email) and not _is_institutional_address(record.email, name):
             return record.email
     return next(
         (e for e in all_emails if is_personal_email_for(e, name) and is_deliverable_shape(e)),
         None,
     )
+
+
+def _is_institutional_address(email: str, name: str | None) -> bool:
+    """An office mailbox is not any one person's own address.
+
+    The model will happily pair whatever address sits next to a name on a
+    contact page, which put "dyrekcja@spolecznaszkola.pl" on a director and
+    "sp10@gzo.nysa.pl" on another -- nine rows in all. Two harms follow: the
+    export presents an office box as that person's address, and because a
+    person-claimed address is removed from the unclaimed pool, the office
+    slot is left with whatever remains. On one school that was
+    "m.banasiak@gzo.nysa.pl" -- so the school's own institutional box sat on
+    a person while a private inbox became the school's public contact.
+
+    An address that STRUCTURALLY matches the person's own name is theirs
+    regardless of what else it looks like."""
+    if is_personal_email_for(email, name):
+        return False
+    return email_priority(email) >= 1 or email_level_hint(email) is not None
 
 
 def _run_llm_extraction(result: dict, school: School, still_needed_roles: set[str]):
