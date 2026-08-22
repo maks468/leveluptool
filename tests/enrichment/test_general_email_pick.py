@@ -54,3 +54,35 @@ def test_wrong_school_number_is_demoted_outright():
 
 def test_empty_candidates_pick_nothing():
     assert pick_general_email([], "primary", "SZKOŁA", None) is None
+
+
+def test_complex_number_is_not_a_school_number_conflict():
+    """"SZKOŁA PODSTAWOWA NR 321" sits inside "Zespół Szkolno-Przedszkolny
+    nr 7", whose secretariat address is sekretariat.zsp7@eduwarszawa.pl.
+    Read as a school number, that 7 contradicted 321, so the school's real
+    office mailbox was demoted below an unlabelled personal address on the
+    same domain -- which then became the stored office contact."""
+    from levelup.services.enrichment.jobs import pick_general_email
+
+    candidates = ["AKolakowska@eduwarszawa.pl", "sekretariat.zsp7@eduwarszawa.pl"]
+    got = pick_general_email(candidates, "PRIMARY", "SZKOŁA PODSTAWOWA NR 321", None)
+    assert got == "sekretariat.zsp7@eduwarszawa.pl"
+
+
+def test_a_bare_conflicting_school_number_is_still_demoted():
+    """The rule the strip must not break: sp84@ can never win for nr 350."""
+    from levelup.services.enrichment.jobs import pick_general_email
+
+    candidates = ["sp84@wspolna.pl", "sp350@wspolna.pl"]
+    got = pick_general_email(candidates, "PRIMARY", "SZKOŁA PODSTAWOWA NR 350", None)
+    assert got == "sp350@wspolna.pl"
+
+
+def test_complex_markers_do_not_swallow_a_real_school_code():
+    r"""Stripping "zs\d+" must not also eat a genuine own-number code."""
+    from levelup.services.enrichment.jobs import _strip_complex_number
+
+    assert _strip_complex_number("sekretariat.zsp7") == "sekretariat."
+    assert _strip_complex_number("zso12.kontakt") == ".kontakt"
+    assert _strip_complex_number("sp350") == "sp350"
+    assert _strip_complex_number("ssp11") == "ssp11"

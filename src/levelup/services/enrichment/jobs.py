@@ -228,6 +228,23 @@ def _run_llm_extraction(result: dict, school: School, still_needed_roles: set[st
 _SCHOOL_NR_RE = re.compile(r"\bnr\.?\s*(\d+)\b", re.IGNORECASE)
 
 
+# A number attached to a COMPLEX marker is the complex's number, not the
+# school's. Confirmed directly: "SZKOŁA PODSTAWOWA NR 321" sits inside
+# "Zespół Szkolno-Przedszkolny nr 7", and its own secretariat address is
+# sekretariat.zsp7@eduwarszawa.pl -- the 7 belongs to "zsp". Read as a
+# school number it contradicted 321, so the number-conflict demotion below
+# pushed the school's real office mailbox BELOW an unlabelled personal
+# address on the same domain (AKolakowska@eduwarszawa.pl), which then
+# became the stored office contact. Stripping marker-attached numbers
+# before the conflict check leaves the rule that motivated it intact: a
+# bare sp84@ still cannot win for school nr 350.
+_COMPLEX_NUMBER_RE = re.compile(r"(?:zspo|zsp|zso|zsz|zs|msz|zpo|zpow|ze)\s*\d+", re.IGNORECASE)
+
+
+def _strip_complex_number(local_part: str) -> str:
+    return _COMPLEX_NUMBER_RE.sub("", local_part)
+
+
 def pick_general_email(
     candidates: list[str], school_level: str, school_name: str, rspo_email: str | None
 ) -> str | None:
@@ -261,7 +278,7 @@ def pick_general_email(
             level_pref = 1
         else:
             level_pref = 2
-        local_digits = re.findall(r"\d+", email.split("@")[0])
+        local_digits = re.findall(r"\d+", _strip_complex_number(email.split("@")[0]))
         number_conflict = 1 if (
             school_number and local_digits and school_number not in {d.lstrip("0") or d for d in local_digits}
         ) else 0
@@ -343,6 +360,13 @@ def _upsert_contact(
     ONE gained an email. That churn is not neutral: these names are
     exported with their Polish declensions into prepared outreach, so a
     silent swap invalidates campaign data to buy nothing."""
+    # Addresses are stored lowercase. A site that writes the SAME mailbox
+    # with different capitalisation on two pages otherwise looks like two
+    # different addresses: one re-run changed a school's stored office
+    # contact from szkola@weldonschool.pl to szkola@weldonSchool.pl, which
+    # is the same inbox and pure churn. It also stops SEKRETARIAT@SCHOOL.PL
+    # landing in a mail-merge column that way.
+    email = email.strip().lower() if email else email
     normalized_name = person_name.strip().lower() if person_name else None
     existing = session.query(SchoolContact).filter_by(school_id=school_id, contact_type=contact_type).all()
     incumbent = next(
