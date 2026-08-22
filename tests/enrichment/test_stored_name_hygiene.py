@@ -63,3 +63,31 @@ def test_ambiguous_pairs_are_never_guessed_at():
 def test_blank_and_none_survive():
     assert _clean_person_name(None) is None
     assert _clean_person_name("") == ""
+
+
+def test_a_forename_that_is_also_a_surname_is_not_swapped():
+    """"Judyta Miłosz" is correct as written. Miłosz is on the first-name
+    list and Judyta was not, so the reorder fired and produced "Miłosz
+    Judyta" -- which the export addresses as "Szanowny Panie Miłoszu":
+    wrong name and wrong gender. A wrong swap is worse than a missed one,
+    so the first-token short-circuit has to know the broader name stock."""
+    assert _clean_person_name("Judyta Miłosz") == "Judyta Miłosz"
+    cols = _cols("Judyta Miłosz")
+    assert cols["teacher_gender"] == "female"
+    assert cols["teacher_salutation"] == "Szanowna Pani Judyto,"
+
+
+def test_the_names_added_to_close_that_gap_all_short_circuit():
+    # Each of these, written FIRST, must stop the reorder.
+    for first in ("Aneta", "Martyna", "Sandra", "Żaneta", "Wiktoria", "Kajetan", "Olaf"):
+        assert _clean_person_name(f"{first} Miłosz") == f"{first} Miłosz"
+
+
+def test_genuine_surname_first_still_reorders_after_the_additions():
+    for stored, want in (
+        ("Zimirska Agnieszka", "Agnieszka Zimirska"),
+        ("Grochowalska Agnieszka", "Agnieszka Grochowalska"),
+        ("Baranowska-Piasek Monika", "Monika Baranowska-Piasek"),
+        ("Bakiera Patrycja", "Patrycja Bakiera"),
+    ):
+        assert _clean_person_name(stored) == want

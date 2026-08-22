@@ -354,6 +354,22 @@ _COMMON_POLISH_FIRST_NAMES = frozenset(n.lower() for n in [
     "Yuliia", "Nadiya", "Halyna", "Liudmyla", "Larysa", "Maryna", "Valentyna",
     "Vira", "Andrii", "Ivan", "Bohdan", "Mykola", "Vitalii", "Oleksandr",
     "Yurii", "Serhii", "Dmytro", "Taras", "Viktor",
+    # Gaps that became load-bearing once this list started gating a WRITE
+    # (see jobs._clean_person_name). A name missing here is read as a
+    # surname, so "Judyta Miłosz" -- Judyta absent, Miłosz present -- was
+    # "corrected" to "Miłosz Judyta", which the export would then address
+    # as "Szanowny Panie Miłoszu": wrong name AND wrong gender. A wrong
+    # swap is worse than a missed one, so the first-token short-circuit
+    # needs the broader stock.
+    "Judyta", "Aldona", "Aneta", "Anita", "Arleta", "Cecylia", "Dagmara",
+    "Eugenia", "Felicja", "Kalina", "Lidia", "Liliana", "Ludmiła", "Malwina",
+    "Marcelina", "Martyna", "Melania", "Michalina", "Mirosława", "Nadia",
+    "Otylia", "Pelagia", "Rozalia", "Salomea", "Sandra", "Teodora", "Wioleta",
+    "Władysława", "Żaneta", "Bogumiła", "Bogusława", "Czesława", "Stanisława",
+    "Genowefa", "Lucyna", "Roksana", "Sabina", "Wiktoria", "Zdzisława",
+    "Alan", "Borys", "Fabian", "Gracjan", "Iwo", "Jeremi", "Kajetan",
+    "Kordian", "Ksawery", "Maksymilian", "Olaf", "Remigiusz", "Seweryn",
+    "Tymoteusz", "Nikodem", "Oskar", "Leon", "Bruno", "Igor",
 ])
 
 
