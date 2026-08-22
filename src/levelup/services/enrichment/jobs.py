@@ -271,6 +271,39 @@ def pick_general_email(
     return min(candidates, key=rank)
 
 
+# Extraction methods that carry a verbatim, span-grounded quote. Anything
+# else (a registry name, a pre-overhaul regex row) is weaker by construction,
+# so an LLM record legitimately replaces it.
+_GROUNDED_METHODS = frozenset({"llm_text", "llm_vision"})
+
+
+def _supersedes(
+    *,
+    challenger_email: str | None,
+    challenger_confidence: str | None,
+    challenger_method: str | None,
+    incumbent,
+) -> bool:
+    """Should a DIFFERENT person take over a slot that already holds one?
+
+    Only when this run genuinely proved more, in one of three ways:
+    an address where the stored row has none (the whole point of the
+    contact), higher confidence, or a grounded quote replacing a row that
+    never had one. Equal evidence leaves the incumbent alone -- see the
+    churn guard in _upsert_contact."""
+    if challenger_email and not incumbent.email:
+        return True
+    if incumbent.email and not challenger_email:
+        return False  # never trade a contactable person for an uncontactable one
+    challenger_rank = _CONFIDENCE_RANK.get(challenger_confidence, 9)
+    incumbent_rank = _CONFIDENCE_RANK.get(incumbent.confidence, 9)
+    if challenger_rank != incumbent_rank:
+        return challenger_rank < incumbent_rank
+    if challenger_method in _GROUNDED_METHODS and incumbent.extraction_method not in _GROUNDED_METHODS:
+        return True
+    return False
+
+
 def _upsert_contact(
     session,
     *,
@@ -298,9 +331,37 @@ def _upsert_contact(
     Degradation guard: when re-finding the SAME person without an email/
     phone this time, the previously stored email/phone is kept rather than
     wiped -- a run that proves less than last time must not destroy what
-    was already proven."""
+    was already proven.
+
+    Churn guard: a DIFFERENT person only takes the slot when they are
+    strictly better evidence (see _supersedes). "The new record just passed
+    the strictest gate" justified blind replacement only while the stored
+    row came from a weaker pipeline. Once both rows are LLM-grounded, a
+    school with eight English teachers simply yields whichever one this
+    crawl happened to reach -- measured on a 100-school re-run of schools
+    that already had a teacher: 19% swapped to a different person and NOT
+    ONE gained an email. That churn is not neutral: these names are
+    exported with their Polish declensions into prepared outreach, so a
+    silent swap invalidates campaign data to buy nothing."""
     normalized_name = person_name.strip().lower() if person_name else None
     existing = session.query(SchoolContact).filter_by(school_id=school_id, contact_type=contact_type).all()
+    incumbent = next(
+        (
+            row
+            for row in existing
+            if row.person_name
+            and normalized_name
+            and row.person_name.strip().lower() != normalized_name
+        ),
+        None,
+    )
+    if incumbent is not None and not _supersedes(
+        challenger_email=email,
+        challenger_confidence=confidence,
+        challenger_method=extraction_method,
+        incumbent=incumbent,
+    ):
+        return  # keep the person already on file; this run proved nothing more
     match = None
     for row in existing:
         row_name = row.person_name.strip().lower() if row.person_name else None
