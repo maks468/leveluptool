@@ -32,6 +32,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -82,6 +83,8 @@ _ISOLATED_CWD = str(_ISOLATED_CWD_PATH)
 # CALLERS (jobs.py) counting their own calls -- this module has no
 # cross-call state to enforce it itself.
 MAX_VISION_CALLS_PER_SCHOOL = 3
+# One turn to call Read, one to answer, plus headroom for a thinking block.
+VISION_MAX_TURNS = 4
 
 # Backstops, not the primary limiter: pages_that_could_prove() below
 # removes pages that provably cannot yield a writeable record, which is
@@ -234,11 +237,18 @@ CALL_TIMEOUT_SECONDS = 300
 
 
 async def _run_query(
-    prompt: str, *, system_prompt: str, model: str, allowed_tools: list[str]
+    prompt: str, *, system_prompt: str, model: str, allowed_tools: list[str], max_turns: int = 1
 ) -> tuple[str | None, dict]:
+    """max_turns defaults to 1 because a text extraction answers in one
+    turn. A call that must USE a tool cannot: it spends one turn invoking
+    the tool and needs another to answer. Confirmed directly -- every
+    vision call ever made by this module died on "Reached maximum number of
+    turns (1)" and returned None, which is why the vision path has never
+    produced a single record. Callers passing allowed_tools must raise
+    this."""
     options = ClaudeAgentOptions(
         system_prompt=system_prompt,
-        max_turns=1,
+        max_turns=max_turns,
         allowed_tools=allowed_tools,
         setting_sources=[],
         model=model,
@@ -323,13 +333,55 @@ _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*\})\s*```", re.DOTALL)
 
 def _parse_json_response(text: str) -> dict | None:
     """Models routinely wrap JSON in a markdown fence despite instructions
-    not to -- stripped here rather than fought over in the prompt."""
+    not to -- stripped here rather than fought over in the prompt.
+
+    A tool-using call also tends to narrate before answering: a real vision
+    read returned "I'll read the image and extract the staff information."
+    immediately followed by valid JSON, which parsed as neither a fence nor
+    a bare object, so a correct seven-record extraction was discarded. The
+    last resort therefore scans for the first BALANCED object in the text,
+    which recovers the answer without loosening what counts as valid JSON."""
     fence_match = _JSON_FENCE_RE.search(text)
     candidate = fence_match.group(1) if fence_match else text.strip()
     try:
         return json.loads(candidate)
     except json.JSONDecodeError:
-        return None
+        pass
+    return _first_json_object(text)
+
+
+def _first_json_object(text: str) -> dict | None:
+    """The first brace-balanced JSON object in `text`, ignoring braces that
+    appear inside strings. Returns None if there isn't one."""
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        parsed = json.loads(text[start : index + 1])
+                    except json.JSONDecodeError:
+                        break
+                    return parsed if isinstance(parsed, dict) else None
+        start = text.find("{", start + 1)
+    return None
 
 
 _TEXT_EXTRACTION_SYSTEM_PROMPT = """You extract staff contact information from Polish school website pages. You are given the text of one or more pages, each preceded by a "=== PAGE: <url> ===" marker.
@@ -766,6 +818,43 @@ def pick_staff_pages(
     return picked
 
 
+# The SDK is given an isolated cwd (see _ISOLATED_CWD), and the Read tool
+# refuses a path outside it. The downloaded roster lands in the system temp
+# dir, so every vision call was denied its own file and burned its turns
+# retrying -- the second half of why this path never worked. Staging a copy
+# inside the cwd is what makes Read succeed; the copy is always removed,
+# and the caller still owns the original.
+def _stamp_source_url(raw: dict | None, source_url: str) -> dict | None:
+    """Fill in each record's source_url from what the CALLER knows.
+
+    The vision prompt asks the model to echo the URL back, and on a real
+    roster it returned seven correct staff records with source_url null on
+    every one -- so schema validation rejected the whole extraction and the
+    read was thrown away. Asking a model to copy a value we already hold
+    exactly is a failure mode with no upside: there is precisely one file in
+    a vision call, and this is its address."""
+    if not isinstance(raw, dict):
+        return raw
+    for record in raw.get("staff") or []:
+        if isinstance(record, dict) and not record.get("source_url"):
+            record["source_url"] = source_url
+    return raw
+
+
+def _stage_for_read(path: str) -> str:
+    _ISOLATED_CWD_PATH.mkdir(parents=True, exist_ok=True)
+    staged = _ISOLATED_CWD_PATH / Path(path).name
+    shutil.copyfile(path, staged)
+    return str(staged)
+
+
+def _unstage(staged: str) -> None:
+    try:
+        os.remove(staged)
+    except OSError:
+        pass
+
+
 def extract_from_image(
     path: str, source_url: str, school_name: str, city: str | None = None, *, usage_out: dict | None = None
 ) -> SchoolExtraction | None:
@@ -776,16 +865,26 @@ def extract_from_image(
     if not SDK_AVAILABLE:
         raise CliUnavailableError("claude-agent-sdk is not installed")
 
-    prompt = f"Read the image at this exact path and extract staff: {path}"
+    staged = _stage_for_read(path)
+    prompt = f"Read the image at this exact path and extract staff: {staged}"
     system_prompt = _VISION_SYSTEM_PROMPT.replace("{source_url}", source_url)
-    text, usage = _run_sync(
-        _run_query(prompt, system_prompt=system_prompt, model=OPUS_MODEL, allowed_tools=["Read"])
-    )
+    try:
+        text, usage = _run_sync(
+            _run_query(
+                prompt,
+                system_prompt=system_prompt,
+                model=OPUS_MODEL,
+                allowed_tools=["Read"],
+                max_turns=VISION_MAX_TURNS,
+            )
+        )
+    finally:
+        _unstage(staged)
     if usage_out is not None:
         usage_out.update(usage)
     if text is None:
         return None
-    raw = _parse_json_response(text)
+    raw = _stamp_source_url(_parse_json_response(text), source_url)
     if raw is None:
         return None
     extraction = _validate_extraction(raw)
@@ -808,16 +907,26 @@ def extract_from_pdf(
     if not SDK_AVAILABLE:
         raise CliUnavailableError("claude-agent-sdk is not installed")
 
-    prompt = f"Read the PDF at this exact path and extract staff: {path}"
+    staged = _stage_for_read(path)
+    prompt = f"Read the PDF at this exact path and extract staff: {staged}"
     system_prompt = _VISION_SYSTEM_PROMPT.replace("{source_url}", source_url)
-    text, usage = _run_sync(
-        _run_query(prompt, system_prompt=system_prompt, model=OPUS_MODEL, allowed_tools=["Read"])
-    )
+    try:
+        text, usage = _run_sync(
+            _run_query(
+                prompt,
+                system_prompt=system_prompt,
+                model=OPUS_MODEL,
+                allowed_tools=["Read"],
+                max_turns=VISION_MAX_TURNS,
+            )
+        )
+    finally:
+        _unstage(staged)
     if usage_out is not None:
         usage_out.update(usage)
     if text is None:
         return None
-    raw = _parse_json_response(text)
+    raw = _stamp_source_url(_parse_json_response(text), source_url)
     if raw is None:
         return None
     return _validate_extraction(raw)

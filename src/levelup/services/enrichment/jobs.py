@@ -4,6 +4,7 @@ rest of the batch -- each item's status/error is tracked independently.
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -18,6 +19,8 @@ from levelup.services.enrichment import llm_extract
 from levelup.services.enrichment.rspo_detail import fetch_rspo_detail, parse_director_and_contacts
 from levelup.services.enrichment.scraper import (
     _COMMON_POLISH_FIRST_NAMES,
+    _NAV_NOISE_HOSTS,
+    download_for_vision,
     _mentions_school_city,
     _normalize_name_order,
     finalize_scrape_result,
@@ -133,6 +136,113 @@ def _is_institutional_address(email: str, name: str | None) -> bool:
     if is_personal_email_for(email, name):
         return False
     return email_priority(email) >= 1 or email_level_hint(email) is not None
+
+
+# WHICH media files are worth a vision call. Measured on the live corpus:
+# _roster_media_urls returns EVERY image/PDF linked from the kept pages --
+# 3,397 files across 709 teacher-less schools, averaging 4.8 each, and
+# almost none are rosters. The actual contents include GDPR notices,
+# classroom-allocation tables, school-supply lists, a Cambridge leaflet and
+# a competition-winners list. Reading them all would cost 1,660 vision
+# calls at ~127s each; filtering on the filename cuts that to 119 while
+# keeping the real rosters (NAUCZYCIELE-2025.09.22.jpg,
+# Wykaz-nauczycieli-SP9.pdf, kadra-200876.jpg, Wychowawcy.pdf).
+#
+# Provenance needs no host check: these URLs are only ever lifted from
+# pages already established as the school's OWN (llm_pages excludes
+# third-party pages), so a roster on the school's CMS/CDN -- edupage's
+# cloud host serves many of them -- is still that school's own file.
+_ROSTER_FILE_RE = re.compile(
+    r"kadra|nauczyciel|grono|pracownic|zespol|zespó|wychowawc|staff|teacher|"
+    r"rada.?pedagog|specjalis",
+    re.IGNORECASE,
+)
+# Documents whose names contain roster vocabulary but which are never a
+# roster -- a teacher-parent contact policy, a pastoral programme, a
+# teachers' handbook, a prize-winners list.
+_NOT_A_ROSTER_RE = re.compile(
+    r"rodo|dane.?osobow|klauzul|statut|regulamin|wyprawka|przydzia|laureat|olimpiad|konkurs|"
+    r"plan.?lekcji|dzwonk|jadlospis|jadłospis|cennik|deklaracj|zgoda|wniosek|harmonogram|"
+    r"zasady|program|poradnik|procedur|sprawozdan|zarzadzenie|zarządzenie|informacja",
+    re.IGNORECASE,
+)
+_VISION_EXTENSIONS = (".pdf", ".jpg", ".jpeg", ".png")
+
+
+def _vision_candidates(llm_pages: list[dict], limit: int) -> list[str]:
+    """Roster-looking media linked from the school's own kept pages."""
+    out: list[str] = []
+    for url in _roster_media_urls(llm_pages, limit=40):
+        path = url.split("?")[0].lower()
+        if not path.endswith(_VISION_EXTENSIONS):
+            continue
+        if any(noise in url.lower() for noise in _NAV_NOISE_HOSTS):
+            continue
+        if not _ROSTER_FILE_RE.search(url) or _NOT_A_ROSTER_RE.search(url):
+            continue
+        if url not in out:
+            out.append(url)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _run_vision_extraction(result: dict, school: School, needed_roles: set[str]):
+    """Read roster IMAGES and PDFs, for schools whose staff list is only
+    published that way. Runs solely when the text pass proved no teacher and
+    a roster-looking file exists, so the ~127s a vision call costs is spent
+    on the 2.4% of schools that could benefit rather than the 20% that merely
+    have some image on a page.
+
+    Records are marked llm_vision and pass through ground_vision_extraction,
+    which caps confidence at medium unless the email's domain matches the
+    school's own site -- a vision quote is read from a picture and cannot be
+    span-verified against fetched text the way llm_text records are, so it
+    is deliberately held to a weaker standard and stays identifiable
+    afterwards."""
+    stats = {"vision_calls": 0, "vision_input_tokens": 0, "vision_output_tokens": 0}
+    if not needed_roles or not llm_extract.is_llm_usable():
+        return None, stats
+    candidates = _vision_candidates(
+        result.get("llm_pages") or [], llm_extract.MAX_VISION_CALLS_PER_SCHOOL
+    )
+    if not candidates:
+        return None, stats
+
+    domain = (school.website_url or "").lower()
+    domain = domain.split("//")[-1].split("/")[0].removeprefix("www.") or None
+    merged: list = []
+    for url in candidates:
+        path = download_for_vision(url)
+        if not path:
+            continue
+        usage: dict = {}
+        try:
+            reader = (
+                llm_extract.extract_from_pdf
+                if url.split("?")[0].lower().endswith(".pdf")
+                else llm_extract.extract_from_image
+            )
+            extraction = reader(path, url, school.name, school.city, usage_out=usage)
+        except llm_extract.CliUnavailableError:
+            return None, stats
+        finally:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        stats["vision_calls"] += 1
+        stats["vision_input_tokens"] += usage.get("input_tokens", 0)
+        stats["vision_output_tokens"] += usage.get("output_tokens", 0)
+        if extraction is None:
+            continue
+        extraction = llm_extract.ground_vision_extraction(extraction, school_website_domain=domain)
+        merged.extend(r for r in extraction.staff if r.role in needed_roles)
+        if {r.role for r in merged} >= needed_roles:
+            break  # every role we came for is proven; stop paying
+    if not merged:
+        return None, stats
+    return llm_extract.SchoolExtraction(staff=merged), stats
 
 
 def _run_llm_extraction(result: dict, school: School, still_needed_roles: set[str]):
@@ -808,6 +918,8 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
     def _writeable(record):
         return record is not None and record.confidence in ("high", "medium")
 
+    teacher_from_vision = False
+
     director_record = teacher_record = None
     if llm_extraction is not None:
         director_record = _pick_best_staff(llm_extraction.staff, ("director",), url_to_tier)
@@ -816,6 +928,24 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
         director_record = None
     if not _writeable(teacher_record):
         teacher_record = None
+
+    # VISION, last resort. Some schools publish their staff list only as a
+    # scan or a photo gallery, so the text pass has nothing to read. Gated
+    # on the teacher still being missing, because that is the role worth
+    # ~127 seconds; a director alone is already covered by the RSPO registry.
+    vision_record_urls: list[str] = []
+    if teacher_record is None:
+        vision_extraction, vision_stats = _run_vision_extraction(result, school, {"english_teacher"})
+        llm_stats.update(vision_stats)
+        _mark("vision")
+        if vision_extraction is not None:
+            vision_teacher = _pick_best_staff(
+                vision_extraction.staff, ("english_teacher",), url_to_tier
+            )
+            if _writeable(vision_teacher):
+                teacher_record = vision_teacher
+                teacher_from_vision = True
+                vision_record_urls.append(vision_teacher.source_url)
 
     teacher_name = _clean_person_name(teacher_record.name) if teacher_record else None
 
@@ -863,7 +993,7 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
         director_extraction_method = director_confidence = director_evidence = director_source_url = None
 
     if teacher_record:
-        teacher_extraction_method = "llm_text"
+        teacher_extraction_method = "llm_vision" if teacher_from_vision else "llm_text"
         teacher_confidence, teacher_evidence = teacher_record.confidence, teacher_record.evidence
         teacher_source_url = teacher_record.source_url
     else:
@@ -987,6 +1117,8 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
         # they're surfaced for a human instead of auto-extracted. Read from
         # the crawled page text, not from paid model output.
         "staff_roster_urls": _roster_media_urls(llm_pages),
+        "vision_roster_urls": vision_record_urls,
+        "teacher_from_vision": teacher_from_vision,
         **timings,
         "specialties_detected": specialties,
         "js_rendered_site": bool(result.get("js_app_shell")),
