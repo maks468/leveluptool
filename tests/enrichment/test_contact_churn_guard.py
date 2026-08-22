@@ -186,3 +186,25 @@ def test_an_office_mailbox_is_not_returned_as_a_persons_email():
         email = "a.michon@gzo.nysa.pl"
 
     assert _resolve_email(Own(), [], "Anna Michoń") == "a.michon@gzo.nysa.pl"
+
+
+def test_the_degradation_guard_does_not_preserve_an_illegitimate_address():
+    """"email or match.email" kept whatever was already stored, so once
+    _resolve_email started refusing to attach an office mailbox to a person,
+    the nine rows already holding one were preserved forever and the re-run
+    meant to clear them changed nothing."""
+    from levelup.services.enrichment.jobs import _is_institutional_address, is_deliverable_shape
+
+    def would_keep(stored, person):
+        kept = None or stored  # no new address proven this run
+        if kept and person and (
+            not is_deliverable_shape(kept) or _is_institutional_address(kept, person)
+        ):
+            return None
+        return kept
+
+    assert would_keep("dyrekcja@spolecznaszkola.pl", "Jarosław Szyjkowski") is None
+    assert would_keep("sp10@gzo.nysa.pl", "Anna Michoń") is None
+    assert would_keep("m.wlazlak-szal@brzegdolny.edu.p", "Maria Wlazlak-Szal") is None
+    # A person's own, deliverable address is still protected.
+    assert would_keep("a.michon@gzo.nysa.pl", "Anna Michoń") == "a.michon@gzo.nysa.pl"

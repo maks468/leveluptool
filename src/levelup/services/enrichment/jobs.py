@@ -488,6 +488,18 @@ def _upsert_contact(
             session.delete(row)  # superseded occupant of this slot
     if match:
         kept_email = email or match.email
+        # The degradation guard keeps what a weaker run couldn't re-prove --
+        # but only while it is still LEGITIMATE. Nine person rows held an
+        # office mailbox ("dyrekcja@...", "sp10@..."); once _resolve_email
+        # started refusing to re-attach those, "email or match.email" simply
+        # preserved them forever, so the re-run meant to clear them changed
+        # nothing. A slot for a PERSON only keeps an address that still
+        # passes today's checks.
+        if kept_email and person_name and (
+            not is_deliverable_shape(kept_email)
+            or _is_institutional_address(kept_email, person_name)
+        ):
+            kept_email = None
         match.person_name = person_name
         match.email = kept_email
         match.phone = phone or match.phone
