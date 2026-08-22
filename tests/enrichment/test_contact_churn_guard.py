@@ -117,3 +117,34 @@ def test_unknown_confidence_ranks_below_every_known_value():
         challenger_method="llm_text",
         incumbent=Row(confidence=None, extraction_method="llm_text"),
     )
+
+
+def test_a_reordered_name_is_the_same_human_not_a_rival():
+    """The churn guard compares people, not strings. Judged literally,
+    "Bakiera Patrycja" and its canonical "Patrycja Bakiera" look like two
+    different occupants of the slot, so the guard refused the rewrite and
+    35 mis-declining names survived their own cleanup re-run."""
+    from levelup.services.enrichment.jobs import _same_human
+
+    assert _same_human("Bakiera Patrycja", "Patrycja Bakiera")
+    assert _same_human("Bożena Zagórska - Arumińska", "Bożena Zagórska-Arumińska")
+    assert _same_human("Aleksandra Kurowska – Susdorf", "Aleksandra Kurowska-Susdorf")
+    # Genuinely different people are still different.
+    assert not _same_human("Alina Piotrowska", "Joanna Jędrasik")
+    assert not _same_human("Anna Kowalska", "Anna Nowak")
+    assert not _same_human(None, "Anna Kowalska")
+
+
+def test_undeliverable_person_addresses_are_not_attached():
+    from levelup.services.enrichment.jobs import _resolve_email
+
+    class Rec:
+        name = "Maria Wlazlak-Szal"
+        email = "m.wlazlak-szal@brzegdolny.edu.p"
+
+    assert _resolve_email(Rec(), [], "Maria Wlazlak-Szal") is None
+    assert _resolve_email(None, ["m.wlazlak-szal@brzegdolny.edu.p"], "Maria Wlazlak-Szal") is None
+    assert (
+        _resolve_email(None, ["m.wlazlak-szal@brzegdolny.edu.pl"], "Maria Wlazlak-Szal")
+        == "m.wlazlak-szal@brzegdolny.edu.pl"
+    )

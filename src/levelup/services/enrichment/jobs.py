@@ -104,9 +104,15 @@ def _resolve_email(record, all_emails: list[str], name: str | None) -> str | Non
     different humans. (2) the structural match (is_personal_email_for)
     over every email the crawl ever saw -- inherently safe, it validates
     against the exact name being written."""
+    # An address nothing can be sent to is not a contact. One school stored
+    # its director as "m.wlazlak-szal@brzegdolny.edu.p" -- a one-letter TLD.
     if record is not None and record.email and _same_person(record.name, name):
-        return record.email
-    return next((e for e in all_emails if is_personal_email_for(e, name)), None)
+        if is_deliverable_shape(record.email):
+            return record.email
+    return next(
+        (e for e in all_emails if is_personal_email_for(e, name) and is_deliverable_shape(e)),
+        None,
+    )
 
 
 def _run_llm_extraction(result: dict, school: School, still_needed_roles: set[str]):
@@ -343,6 +349,14 @@ def pick_general_email(
     return min(candidates, key=rank)
 
 
+def _same_human(a: str | None, b: str | None) -> bool:
+    """Same person, compared on the canonical form -- so a stored name that
+    differs only in word order ("Bakiera Patrycja") or dash spelling
+    ("Zagórska - Arumińska") is recognised as the same human as its
+    canonicalised spelling, rather than as a rival occupant of the slot."""
+    return _same_person(_clean_person_name(a), _clean_person_name(b))
+
+
 # Extraction methods that carry a verbatim, span-grounded quote. Anything
 # else (a registry name, a pre-overhaul regex row) is weaker by construction,
 # so an LLM record legitimately replaces it.
@@ -422,15 +436,18 @@ def _upsert_contact(
     # is the same inbox and pure churn. It also stops SEKRETARIAT@SCHOOL.PL
     # landing in a mail-merge column that way.
     email = email.strip().lower() if email else email
-    normalized_name = person_name.strip().lower() if person_name else None
     existing = session.query(SchoolContact).filter_by(school_id=school_id, contact_type=contact_type).all()
+    # "Same person" is judged on the CANONICAL form, not the raw string, so a
+    # row differing only in word order or dash spelling is recognised as the
+    # same human and gets rewritten to the canonical spelling. Compared
+    # literally, "Bakiera Patrycja" and "Patrycja Bakiera" look like two
+    # different people, so the churn guard below refused the update and 35
+    # mis-declining names survived their own cleanup re-run.
     incumbent = next(
         (
             row
             for row in existing
-            if row.person_name
-            and normalized_name
-            and row.person_name.strip().lower() != normalized_name
+            if row.person_name and person_name and not _same_human(row.person_name, person_name)
         ),
         None,
     )
@@ -443,8 +460,9 @@ def _upsert_contact(
         return  # keep the person already on file; this run proved nothing more
     match = None
     for row in existing:
-        row_name = row.person_name.strip().lower() if row.person_name else None
-        if row_name == normalized_name:
+        if person_name and row.person_name and _same_human(row.person_name, person_name):
+            match = row
+        elif not person_name and not row.person_name:
             match = row
         else:
             session.delete(row)  # superseded occupant of this slot
