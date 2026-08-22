@@ -18,6 +18,7 @@ from levelup.services.enrichment import llm_extract
 from levelup.services.enrichment.rspo_detail import fetch_rspo_detail, parse_director_and_contacts
 from levelup.services.enrichment.scraper import (
     _mentions_school_city,
+    _normalize_name_order,
     finalize_scrape_result,
     scrape_school_website,
 )
@@ -243,6 +244,29 @@ _COMPLEX_NUMBER_RE = re.compile(r"(?:zspo|zsp|zso|zsz|zs|msz|zpo|zpow|ze)\s*\d+"
 
 def _strip_complex_number(local_part: str) -> str:
     return _COMPLEX_NUMBER_RE.sub("", local_part)
+
+
+# Written names are normalized once, here, so every downstream consumer --
+# the CSV export's Polish declensions above all -- sees one canonical form.
+# Two shapes came out of a 500-school re-run and both produce embarrassing
+# Polish in a letter:
+#   * "Bakiera Patrycja" (surname first). Female first names are detected by
+#     the "-a" ending rule, so an -a surname looks like a first name and the
+#     export declined the SURNAME as the given name: "Szanowna Pani
+#     Bakiero", dative "Pani Bakierze Patrycja". _normalize_name_order
+#     decides this on a curated first-name list, so it swaps only on proof.
+#   * "Bożena Zagórska - Arumińska" / "Aleksandra Kurowska – Susdorf" (a
+#     double-barrelled surname spaced or en-dashed). Split on whitespace,
+#     only the final token counted as the surname and the first half was
+#     silently dropped.
+_SPACED_DASH_RE = re.compile(r"\s*[-‐-―]\s*")
+
+
+def _clean_person_name(name: str | None) -> str | None:
+    if not name:
+        return name
+    cleaned = _SPACED_DASH_RE.sub("-", " ".join(name.split()))
+    return _normalize_name_order(cleaned) or cleaned
 
 
 def pick_general_email(
@@ -712,7 +736,7 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
     if not _writeable(teacher_record):
         teacher_record = None
 
-    teacher_name = teacher_record.name if teacher_record else None
+    teacher_name = _clean_person_name(teacher_record.name) if teacher_record else None
 
     # Director: RSPO's registry vs the school's own site. The registry is
     # official but can be STALE (confirmed real failure, TEB Rzeszów: RSPO
@@ -743,7 +767,7 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
         use_site_director = True
 
     if use_site_director:
-        director_name = director_record.name
+        director_name = _clean_person_name(director_record.name)
         director_extraction_method = "llm_text"
         director_confidence, director_evidence = director_record.confidence, director_record.evidence
         director_source_url = director_record.source_url

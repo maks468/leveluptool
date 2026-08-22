@@ -61,6 +61,14 @@ _SURNAME_SHAPED_RE = re.compile(
 
 def _clean(full_name: str) -> list[str]:
     name = re.sub(r"\s+", " ", (full_name or "").strip())
+    # A double-barrelled surname written with spaces or an en/em dash around
+    # the join is ONE surname. Split on whitespace it became a separate
+    # token, and since only parts[-1] is treated as the surname the first
+    # half was silently dropped: "Bożena Zagórska - Arumińska" declined to
+    # "Pani Bożenie Arumińskiej", losing Zagórska, and "Aleksandra Kurowska
+    # – Susdorf" lost Kurowska. Both are real scraped names. Normalized to a
+    # plain hyphen here so the existing part-wise hyphen handling applies.
+    name = re.sub(r"\s*[-‐-―]\s*", "-", name)
     while _TITLE_RE.match(name):
         name = _TITLE_RE.sub("", name, count=1)
     return [p for p in name.split(" ") if p]
@@ -419,12 +427,20 @@ def person_csv_columns(full_name: str | None, role: str) -> dict[str, str]:
     # token is surname-shaped AND the last token is a name the gender
     # logic actually recognizes, so "Baranowska-Piasek" alone or two
     # ambiguous tokens still degrade instead of guessing.
-    if (
-        len(parts) == 2
-        and _SURNAME_SHAPED_RE.search(parts[0])
-        and _first_name_forms(parts[1])[0] is not None
-    ):
-        parts = [parts[1], parts[0]]
+    # Two tests, either sufficient, both requiring proof on BOTH tokens:
+    # the leading token is surname-SHAPED, or it is simply not a first name
+    # the gender logic recognizes while the trailing token is. The shape
+    # test alone missed every surname without a Polish surname suffix --
+    # "Bakiera Patrycja" was read as first name "Bakiera", giving the
+    # dative "Pani Bakierze Patrycja" and the salutation "Szanowna Pani
+    # Bakiero", i.e. addressing a teacher by her declined SURNAME. Two
+    # ambiguous tokens, or a lone "Baranowska-Piasek", still degrade
+    # rather than guess.
+    if len(parts) == 2 and _first_name_forms(parts[1])[0] is not None:
+        leading_is_surname_shaped = bool(_SURNAME_SHAPED_RE.search(parts[0]))
+        leading_is_not_a_first_name = _first_name_forms(parts[0])[0] is None
+        if leading_is_surname_shaped or leading_is_not_a_first_name:
+            parts = [parts[1], parts[0]]
     gender: str | None = None
     first = last = ""
     first_forms = surname_forms = None
