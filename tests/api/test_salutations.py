@@ -165,8 +165,14 @@ def test_ukrainian_name_in_foreign_table_goes_undeclined():
 
 
 def test_csv_helpers_stay_aligned():
+    # Length is asserted against the ordering itself, not a literal: the
+    # column set grows (salutation_casual was added for a second register),
+    # and a hard-coded count turns every such addition into a false failure
+    # while still not proving headers and values line up.
+    from levelup.services.salutations import PERSON_COLUMN_ORDER
+
     headers = csv_headers("teacher")
     values = csv_values("Agata Bień", "teacher")
-    assert len(headers) == len(values) == 12
+    assert len(headers) == len(values) == len(PERSON_COLUMN_ORDER)
     assert headers[0] == "teacher_gender"
     assert dict(zip(headers, values))["teacher_ref_inst"] == "Panią Agatą Bień"

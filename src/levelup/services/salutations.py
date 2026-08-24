@@ -400,10 +400,10 @@ SECRETARIAT_SALUTATION = "Dzień dobry,"
 
 
 def _salutation(role: str, gender: str | None, vocative: str | None) -> str:
-    """Direct-address opener. Directors get the title form -- Polish
-    etiquette for a director you don't know personally -- which also needs
-    no name declension at all. Teachers get the warmer first-name vocative
-    when it's known."""
+    """Direct-address opener, formal register ("Szanowna Pani Anno,").
+    Directors get the title form -- Polish etiquette for a director you
+    don't know personally -- which also needs no name declension at all.
+    Teachers get the warmer first-name vocative when it's known."""
     if role == "director":
         if gender == "female":
             return "Szanowna Pani Dyrektor,"
@@ -414,6 +414,29 @@ def _salutation(role: str, gender: str | None, vocative: str | None) -> str:
         return f"Szanowna Pani {vocative}," if vocative else "Szanowna Pani,"
     if gender == "male":
         return f"Szanowny Panie {vocative}," if vocative else "Szanowny Panie,"
+    return "Dzień dobry,"
+
+
+def _salutation_casual(role: str, gender: str | None, vocative: str | None) -> str:
+    """The same opener in the everyday register ("Dzień dobry Pani Anno,")
+    -- exported alongside the formal one so a campaign can pick the tone
+    per audience rather than per person. Both use the SAME vocative, so
+    switching register never changes how someone's name is inflected.
+
+    Without a name there is no casual form worth having: "Dzień dobry
+    Panie," on its own reads as an unfinished sentence in Polish, so those
+    rows fall back to the bare greeting rather than a broken one."""
+    if role == "director":
+        if gender == "female":
+            return "Dzień dobry Pani Dyrektor,"
+        if gender == "male":
+            return "Dzień dobry Panie Dyrektorze,"
+        return "Dzień dobry,"
+    if vocative:
+        if gender == "female":
+            return f"Dzień dobry Pani {vocative},"
+        if gender == "male":
+            return f"Dzień dobry Panie {vocative},"
     return "Dzień dobry,"
 
 
@@ -486,6 +509,7 @@ def person_csv_columns(full_name: str | None, role: str) -> dict[str, str]:
         "first_name": first if quality != "role_only" else "",
         "last_name": last if quality != "role_only" else "",
         "salutation": _salutation(role, gender, vocative),
+        "salutation_casual": _salutation_casual(role, gender, vocative),
         "ref_nom": nominative,
         "subject_ref": subject_ref,
         "ref_quality": quality,
@@ -497,7 +521,7 @@ def person_csv_columns(full_name: str | None, role: str) -> dict[str, str]:
 
 # Fixed export ordering so all three CSVs stay column-identical.
 PERSON_COLUMN_ORDER = (
-    "gender", "first_name", "last_name", "salutation",
+    "gender", "first_name", "last_name", "salutation", "salutation_casual",
     "ref_nom", "ref_gen", "ref_dat", "ref_acc", "ref_inst", "ref_loc",
     "subject_ref", "ref_quality",
 )
