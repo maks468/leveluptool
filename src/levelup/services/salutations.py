@@ -534,3 +534,35 @@ def csv_headers(prefix: str) -> list[str]:
 def csv_values(full_name: str | None, role: str) -> list[str]:
     columns = person_csv_columns(full_name, role)
     return [columns[name] for name in PERSON_COLUMN_ORDER]
+
+# ---------------------------------------------------------------------------
+# Recipient-matched greeting
+# ---------------------------------------------------------------------------
+
+RECIPIENT_COLUMNS = ("recipient_salutation", "recipient_salutation_casual", "recipient_is")
+
+
+def recipient_columns(
+    owner: str | None, teacher_name: str | None, director_name: str | None
+) -> list[str]:
+    """The greeting for whoever the outgoing address ACTUALLY belongs to.
+
+    The export previously offered the teacher's name and the teacher's
+    salutations next to a single "best_email" column that, at partial level,
+    is virtually never the teacher's own address -- so a letter opening
+    "Dzien dobry Pani Anno" went to the secretariat, or to the director's
+    inbox under the director's name. These three columns remove the choice:
+    the greeting is derived from the OWNER of the address, so name and
+    recipient can never disagree.
+
+    owner is "teacher", "director", "office", or None."""
+    if owner == "teacher" and teacher_name:
+        cols = person_csv_columns(teacher_name, "teacher")
+        return [cols["salutation"], cols["salutation_casual"], "teacher"]
+    if owner == "director" and director_name:
+        cols = person_csv_columns(director_name, "director")
+        return [cols["salutation"], cols["salutation_casual"], "director"]
+    # An office mailbox is nobody in particular -- and a school that gave us
+    # only a shared box gets the impersonal opener, which is also the right
+    # register for asking a secretariat to pass a message on.
+    return [SECRETARIAT_SALUTATION, SECRETARIAT_SALUTATION, "office" if owner else "none"]

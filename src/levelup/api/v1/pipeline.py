@@ -28,6 +28,7 @@ from levelup.api.v1.schemas import (
 from levelup.api.v1.schools import (
     SCHOOL_TYPE_LEVELS,
     _apply_filters,
+    _compute_best_email_owners,
     _compute_best_emails,
     _compute_enrichment_levels,
     _enrichment_predicate,
@@ -38,6 +39,7 @@ from levelup.core.security import get_current_user
 from levelup.models.crm import SchoolTag
 from levelup.models.pipeline import ActivityLog, PipelineStage, PipelineState
 from levelup.models.school import School
+from levelup.models.enrichment import SchoolContact
 from levelup.models.score import CurrentScore, SchoolScore
 from levelup.models.user import User
 from levelup.services import salutations
@@ -394,14 +396,25 @@ def export_pipeline_csv(
     query = query.order_by(sort_col)
 
     rows = query.all()
-    best_emails = _compute_best_emails(session, [school.id for school, _ in rows])
+    best_emails = _compute_best_email_owners(session, [school.id for school, _ in rows])
+    teacher_emails = {
+        row.school_id: row.email
+        for row in session.query(SchoolContact).filter(
+            SchoolContact.school_id.in_([school.id for school, _ in rows]),
+            SchoolContact.contact_type == 'english_coordinator',
+            SchoolContact.email.isnot(None),
+        )
+    }
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(
         [
             "rspo_id", "name", "level", "voivodeship", "city", "website_url", "director_name",
-            "english_teacher_name", "best_email", "score", "stage", "students",
+            "english_teacher_name", "best_email", "best_email_owner", "teacher_email",
+            "can_email_teacher_directly",
+            *salutations.RECIPIENT_COLUMNS,
+            "score", "stage", "students",
             "next_action_date", "stage_updated_at", "entered_pipeline_at", "added_via",
             *salutations.csv_headers("teacher"),
             *salutations.csv_headers("director"),
@@ -425,7 +438,15 @@ def export_pipeline_csv(
                 school.website_url or "",
                 school.director_name or "",
                 school.english_teacher_name or "",
-                best_emails.get(school.id) or "",
+                (best_emails.get(school.id) or (None, None))[0] or "",
+                (best_emails.get(school.id) or (None, None))[1] or "",
+                teacher_emails.get(school.id) or "",
+                "yes" if (best_emails.get(school.id) or (None, None))[1] == "teacher" else "no",
+                *salutations.recipient_columns(
+                    (best_emails.get(school.id) or (None, None))[1],
+                    school.english_teacher_name,
+                    school.director_name,
+                ),
                 score.total_score if score else "",
                 state.stage.value,
                 school.student_count if school.student_count is not None else "",

@@ -27,7 +27,8 @@ from levelup.core.security import get_current_user
 from levelup.models.campaign import Campaign, CampaignSchool
 from levelup.models.score import CurrentScore, SchoolScore
 from levelup.models.user import User
-from levelup.api.v1.schools import _compute_best_emails
+from levelup.api.v1.schools import _compute_best_email_owners
+from levelup.models.enrichment import SchoolContact
 from levelup.services import salutations
 from levelup.services.pipeline.campaigns import (
     move_to_campaign,
@@ -177,14 +178,28 @@ def export_campaign_csv(campaign_id: int, session: Session = Depends(get_session
         .filter(CurrentScore.school_id.in_([m.school_id for m in memberships]))
         .all()
     )
-    best_emails = _compute_best_emails(session, [m.school_id for m in memberships])
+    best_emails = _compute_best_email_owners(session, [m.school_id for m in memberships])
+    # The teacher's OWN address, blank when she has none -- so a
+    # teacher-addressed template can be filtered to rows that really
+    # reach her, rather than silently falling back to a shared box.
+    teacher_emails = {
+        row.school_id: row.email
+        for row in session.query(SchoolContact).filter(
+            SchoolContact.school_id.in_([m.school_id for m in memberships]),
+            SchoolContact.contact_type == 'english_coordinator',
+            SchoolContact.email.isnot(None),
+        )
+    }
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(
         [
             "rspo_id", "name", "level", "voivodeship", "city", "website_url", "director_name",
-            "english_teacher_name", "best_email", "score", "stage_when_moved", "added_to_campaign",
+            "english_teacher_name", "best_email", "best_email_owner", "teacher_email",
+            "can_email_teacher_directly",
+            *salutations.RECIPIENT_COLUMNS,
+            "score", "stage_when_moved", "added_to_campaign",
             *salutations.csv_headers("teacher"),
             *salutations.csv_headers("director"),
             "secretariat_salutation",
@@ -202,7 +217,15 @@ def export_campaign_csv(campaign_id: int, session: Session = Depends(get_session
                 school.website_url or "",
                 school.director_name or "",
                 school.english_teacher_name or "",
-                best_emails.get(m.school_id) or "",
+                (best_emails.get(m.school_id) or (None, None))[0] or "",
+                (best_emails.get(m.school_id) or (None, None))[1] or "",
+                teacher_emails.get(m.school_id) or "",
+                "yes" if (best_emails.get(m.school_id) or (None, None))[1] == "teacher" else "no",
+                *salutations.recipient_columns(
+                    (best_emails.get(m.school_id) or (None, None))[1],
+                    school.english_teacher_name,
+                    school.director_name,
+                ),
                 scores.get(m.school_id) if scores.get(m.school_id) is not None else "",
                 m.stage_at_move,
                 m.added_at,

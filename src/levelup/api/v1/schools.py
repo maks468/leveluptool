@@ -330,6 +330,52 @@ def _enrichment_predicate(enrichment: str):
     }.get(enrichment)
 
 
+# Whose inbox `best_email` actually is. The export used to emit that column
+# alone, beside the teacher's name and the teacher's salutations, with
+# nothing saying the address might belong to somebody else -- and for a
+# school at "partial" level it almost always does, because partial means a
+# teacher was NAMED but no address of her own was ever found. Merged
+# against a letter that opens "Dzien dobry Pani Anno", every such row sends
+# a message addressed to the teacher into the secretariat's or the
+# DIRECTOR's inbox. Confirmed on real campaign data: all 249 rows of the
+# "SP Partial Score 60+" campaign are this shape, one of them addressing
+# the teacher Elzbieta Felicka-Okrzesik at dyrektor@katolicka.edu.pl.
+#
+# So the owner travels WITH the address, and the export derives the
+# greeting from the owner rather than from whoever happens to be named.
+CONTACT_TYPE_TO_OWNER = {
+    "english_coordinator": "teacher",
+    "director": "director",
+    "general": "office",
+}
+
+
+def _compute_best_email_owners(session: Session, school_ids: list[int]) -> dict[int, tuple[str | None, str | None]]:
+    """(email, owner) per school -- owner is "teacher", "director",
+    "office", or None when no address was found at all. Same precedence as
+    _compute_best_emails, which is kept as a thin wrapper so existing
+    callers are unaffected."""
+    if not school_ids:
+        return {}
+    contacts = session.query(SchoolContact).filter(SchoolContact.school_id.in_(school_ids)).all()
+    by_school: dict[int, list[SchoolContact]] = {}
+    for contact in contacts:
+        by_school.setdefault(contact.school_id, []).append(contact)
+
+    resolved: dict[int, tuple[str | None, str | None]] = {}
+    for school_id in school_ids:
+        school_contacts = by_school.get(school_id, [])
+        resolved[school_id] = (None, None)
+        for contact_type in ("english_coordinator", "director", "general"):
+            email = next(
+                (c.email for c in school_contacts if c.contact_type == contact_type and c.email), None
+            )
+            if email:
+                resolved[school_id] = (email, CONTACT_TYPE_TO_OWNER[contact_type])
+                break
+    return resolved
+
+
 def _compute_best_emails(session: Session, school_ids: list[int]) -> dict[int, str | None]:
     """The single best contact email per school for an outreach campaign:
     a person's OWN (personal-verified) address first -- the ENGLISH TEACHER
