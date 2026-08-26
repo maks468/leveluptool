@@ -11,7 +11,7 @@ import {
   type PipelineStage,
 } from "@/types/domain"
 
-const ENRICHMENT_LEVELS: EnrichmentLevel[] = ["not_enriched", "basic", "partial", "successful"]
+const ENRICHMENT_LEVELS: EnrichmentLevel[] = ["not_enriched", "basic", "partial", "successful", "complete"]
 
 // Mirrors the Library's school-type options -- the question doesn't change
 // once a school is in the pipeline, only the population it's asked of.
@@ -243,7 +243,7 @@ export function PipelineFiltersBar({
               {ENRICHMENT_LEVEL_CONFIG[level].label}
             </option>
           ))}
-          <option value="successful_teacher">Teacher email — top priority</option>
+
         </select>
       </div>
 

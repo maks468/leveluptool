@@ -159,9 +159,11 @@ def test_python_levels_match_the_documented_fixture_intent(session):
     wrong thing."""
     levels = expected_levels(session)
     assert levels["director-personal-email"] == "successful"
-    assert levels["teacher-personal-email"] == "successful"
+    # The teacher's own address is the ladder's top -- "complete", above a
+    # director-only success.
+    assert levels["teacher-personal-email"] == "complete"
     assert levels["personal-plus-office"] == "successful"
-    assert levels["both-personal-emails"] == "successful"
+    assert levels["both-personal-emails"] == "complete"
     assert levels["teacher-named-only"] == "partial"
     assert levels["teacher-named-and-director-basic"] == "partial"
     assert levels["director-named-plus-office-email"] == "basic"
@@ -170,7 +172,7 @@ def test_python_levels_match_the_documented_fixture_intent(session):
     assert levels["never-touched"] == "not_enriched"
 
 
-@pytest.mark.parametrize("level", ["successful", "partial", "basic", "not_enriched"])
+@pytest.mark.parametrize("level", ["complete", "successful", "partial", "basic", "not_enriched"])
 def test_sql_predicates_agree_with_python_levels(session, level):
     """The anti-drift check -- see this module's docstring."""
     from_python = {name for name, value in expected_levels(session).items() if value == level}
@@ -181,17 +183,21 @@ def test_sql_predicates_agree_with_python_levels(session, level):
     assert from_sql == from_python
 
 
-def test_successful_teacher_is_the_teacher_email_subset_of_successful(session):
-    """The top-priority refinement: only schools where the ENGLISH TEACHER's
-    own address was found -- a director-only success doesn't qualify."""
-    teacher_successes = names_matching(session, enrichment="successful_teacher")
+def test_complete_is_the_teacher_email_tier_and_excludes_director_only(session):
+    """"complete" is a level of its own now, mutually exclusive with
+    "successful" the way partial/basic exclude their betters. The old
+    "successful_teacher" value stays accepted as a deprecated alias."""
+    complete = names_matching(session, enrichment="complete")
+    assert complete == {"teacher-personal-email", "both-personal-emails"}
+    assert complete == names_matching(session, enrichment="successful_teacher")
 
-    assert teacher_successes == {"teacher-personal-email", "both-personal-emails"}
-    assert "director-personal-email" not in teacher_successes
-    # A subset of "successful", never something outside it. (Not asserted
-    # strict: pool semantics can hide the director-only successes that
-    # would otherwise make the containment proper.)
-    assert teacher_successes <= names_matching(session, enrichment="successful")
+    # Both director-only successes are assigned out of the pool (see
+    # IN_PIPELINE / IN_CAMPAIGN), so judge them on the level itself.
+    levels = expected_levels(session)
+    assert levels["director-personal-email"] == "successful"
+    assert levels["personal-plus-office"] == "successful"
+    # Mutually exclusive: a school is exactly one of the two.
+    assert complete & names_matching(session, enrichment="successful") == set()
 
 
 def test_best_email_prefers_the_teacher_over_the_director(session):

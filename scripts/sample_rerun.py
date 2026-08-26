@@ -49,7 +49,9 @@ def level_of(conn, sid):
     """The school's current Library level, computed the same way the UI does."""
     row = conn.execute(
         "select "
-        " max(case when contact_type in ('director','english_coordinator') "
+        " max(case when contact_type='english_coordinator' "
+        "          and email is not null and email != '' then 1 else 0 end),"
+        " max(case when contact_type='director' "
         "          and email is not null and email != '' then 1 else 0 end),"
         " max(case when contact_type='english_coordinator' "
         "          and person_name is not null and person_name != '' then 1 else 0 end),"
@@ -60,8 +62,10 @@ def level_of(conn, sid):
         "from school_contacts where school_id=?",
         (sid,),
     ).fetchone()
-    prio, teacher, director, general = [bool(x) for x in (row or (0, 0, 0, 0))]
-    if prio:
+    tmail, dmail, teacher, director, general = [bool(x) for x in (row or (0, 0, 0, 0, 0))]
+    if tmail:
+        return "complete"
+    if dmail:
         return "successful"
     if teacher:
         return "partial"
@@ -139,7 +143,7 @@ def do_compare(args):
     snap = json.load(open(args.infile, encoding="utf-8"))
     before = snap["before"]
 
-    LEVEL_RANK = {"not_enriched": 0, "basic": 1, "partial": 2, "successful": 3}
+    LEVEL_RANK = {"not_enriched": 0, "basic": 1, "partial": 2, "successful": 3, "complete": 4}
     per_group = {}
 
     for group, ids in snap["sample"].items():

@@ -181,12 +181,17 @@ def _compute_enrichment_levels(session: Session, school_ids: list[int]) -> dict[
     (director, English teacher, and the nameless "general" mailbox)
     together -- a different, coarser axis than a single contact's own
     failed/partial/verified quality:
-    - "successful": a priority (personal, structurally-verified) email
-      was found for the director OR the English teacher -- reaches a
-      real person directly. A director/teacher contact's own `email`
-      field is only ever populated with such a verified address in the
-      first place (see jobs.py), so any email present there already
-      qualifies -- nothing generic ever gets attached to a name.
+    - "complete": the ENGLISH TEACHER's own priority (personal,
+      structurally-verified) email was found -- the tool's top-priority
+      contact reached directly. The top of the ladder: for an
+      English-language program nothing beats writing to the teacher
+      herself.
+    - "successful": a priority email was found for the DIRECTOR (but not
+      the teacher) -- still reaches a real decision-maker directly. A
+      director/teacher contact's own `email` field is only ever populated
+      with such a verified address in the first place (see jobs.py), so
+      any email present there already qualifies -- nothing generic ever
+      gets attached to a name.
     - "partial": no priority email yet, but the English teacher's own
       name is known -- for an English-language program, knowing WHO
       teaches English is itself a useful lead even without their email.
@@ -213,7 +218,9 @@ def _compute_enrichment_levels(session: Session, school_ids: list[int]) -> dict[
         teachers = [c for c in school_contacts if c.contact_type == "english_coordinator"]
         general = [c for c in school_contacts if c.contact_type == "general"]
 
-        if any(has_priority_email(c) for c in directors + teachers):
+        if any(has_priority_email(c) for c in teachers):
+            levels[school_id] = "complete"
+        elif any(has_priority_email(c) for c in directors):
             levels[school_id] = "successful"
         elif any(c.person_name for c in teachers):
             levels[school_id] = "partial"
@@ -309,9 +316,13 @@ def _enrichment_predicate(enrichment: str):
     attempted = exists().where(EnrichmentJobItem.school_id == School.id)
 
     return {
-        "successful": has_priority_email,
-        # Not a fifth level -- a refinement of "successful", so it doesn't
-        # exclude the other levels' conditions the way partial/basic must.
+        # The ladder's top: the teacher's own address. Mutually exclusive
+        # with "successful" the same way partial/basic exclude their
+        # betters -- a school is exactly one of these.
+        "complete": teacher_priority_email,
+        "successful": and_(has_priority_email, not_(teacher_priority_email)),
+        # Deprecated alias, kept because saved links/exports may still use
+        # it: identical to "complete" now that it IS a level of its own.
         "successful_teacher": teacher_priority_email,
         "partial": and_(not_(has_priority_email), teacher_named),
         "basic": and_(
@@ -476,7 +487,7 @@ def list_schools(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    enrichment: str = Query("all", description="all|enriched|not_enriched|successful|successful_teacher|partial|basic|attempted|never_attempted"),
+    enrichment: str = Query("all", description="all|enriched|not_enriched|complete|successful|successful_teacher|partial|basic|attempted|never_attempted"),
     sort: str = "score:desc",
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
@@ -546,7 +557,7 @@ def count_schools(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    enrichment: str = Query("all", description="all|enriched|not_enriched|successful|successful_teacher|partial|basic|attempted|never_attempted"),
+    enrichment: str = Query("all", description="all|enriched|not_enriched|complete|successful|successful_teacher|partial|basic|attempted|never_attempted"),
 ):
     query = _apply_filters(
         _base_query(session).with_entities(School.id),
@@ -584,7 +595,7 @@ def list_school_ids(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    enrichment: str = Query("all", description="all|enriched|not_enriched|successful|successful_teacher|partial|basic|attempted|never_attempted"),
+    enrichment: str = Query("all", description="all|enriched|not_enriched|complete|successful|successful_teacher|partial|basic|attempted|never_attempted"),
 ):
     """Every school id matching the given filters, across every page --
     lets the Library's "select all N matching my filters" checkbox act on
@@ -626,7 +637,7 @@ def export_schools_csv(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    enrichment: str = Query("all", description="all|enriched|not_enriched|successful|successful_teacher|partial|basic|attempted|never_attempted"),
+    enrichment: str = Query("all", description="all|enriched|not_enriched|complete|successful|successful_teacher|partial|basic|attempted|never_attempted"),
     sort: str = "score:desc",
 ):
     """CSV export of a filtered Library segment -- for handing a batch to a

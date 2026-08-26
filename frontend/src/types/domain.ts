@@ -58,7 +58,7 @@ export interface Score {
   computed_at: string
 }
 
-export type EnrichmentLevel = "successful" | "partial" | "basic" | "not_enriched"
+export type EnrichmentLevel = "complete" | "successful" | "partial" | "basic" | "not_enriched"
 
 export interface School {
   id: number
@@ -343,7 +343,8 @@ export interface LibraryFilters {
 export type EnrichmentFilter =
   | "all"
   | EnrichmentLevel
-  /** Refinement of "successful": the ENGLISH TEACHER's own email was found --
+  | "complete"
+  /** Deprecated alias of "complete": the ENGLISH TEACHER's own email was found --
    * the top-priority contact, always ranked above the director's. */
   | "successful_teacher"
   | "enriched"

@@ -97,6 +97,7 @@ def _describe_pull_criteria(filters: dict, limit: int | None) -> str:
     enrichment_labels = {
         "enriched": "enriched",
         "not_enriched": "not enriched",
+        "complete": "enrichment: complete -- teacher email",
         "successful": "enrichment: successful",
         "successful_teacher": "teacher email found",
         "partial": "enrichment: partial",
@@ -238,7 +239,7 @@ def list_pipeline(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    enrichment_level: str | None = Query(None, description="not_enriched|basic|partial|successful|successful_teacher"),
+    enrichment_level: str | None = Query(None, description="not_enriched|basic|partial|successful|complete|successful_teacher"),
     sort: str = "stage_updated_at:desc",
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
@@ -310,7 +311,7 @@ def list_pipeline_ids(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    enrichment_level: str | None = Query(None, description="not_enriched|basic|partial|successful|successful_teacher"),
+    enrichment_level: str | None = Query(None, description="not_enriched|basic|partial|successful|complete|successful_teacher"),
 ):
     """Every school id in the pipeline matching the given filters, across
     all pages (highest score first) -- lets the UI act on a whole filtered
@@ -359,7 +360,7 @@ def export_pipeline_csv(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    enrichment_level: str | None = Query(None, description="not_enriched|basic|partial|successful|successful_teacher"),
+    enrichment_level: str | None = Query(None, description="not_enriched|basic|partial|successful|complete|successful_teacher"),
     sort: str = "stage_updated_at:desc",
 ):
     """CSV export of a filtered Pipeline segment -- matches exactly what's

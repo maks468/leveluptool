@@ -17,7 +17,7 @@ import sys
 sys.path.insert(0, "/app/scripts")
 from sample_rerun import state_of  # noqa: E402
 
-RANK = {"not_enriched": 0, "basic": 1, "partial": 2, "successful": 3}
+RANK = {"not_enriched": 0, "basic": 1, "partial": 2, "successful": 3, "complete": 4}
 JOBS = (77, 78)
 
 

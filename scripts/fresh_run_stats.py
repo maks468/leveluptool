@@ -46,7 +46,7 @@ def main():
     if n:
         pct=lambda k:f"{100*k/n:.1f}%"
         print(f"\n  ENRICHMENT LEVEL REACHED:")
-        for L in ("successful","partial","basic","not_enriched"):
+        for L in ("complete","successful","partial","basic","not_enriched"):
             print(f"    {L:14}: {lvl[L]:4}  ({pct(lvl[L])})")
         print(f"\n  english teacher found : {teach}  ({pct(teach)})   [{vis} via vision]")
         print(f"  teacher WITH email    : {mail}  ({pct(mail)})")
