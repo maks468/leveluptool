@@ -137,3 +137,24 @@ def test_links_resolve_against_the_final_url_after_a_redirect():
     # Against the landing URL it points where a browser would.
     fixed = [u for _, u in _find_subpage_links(soup, landed, "SZKOLA PODSTAWOWA")]
     assert any("pl_start.asp" in u and "menu=223" in u for u in fixed), fixed
+
+
+def test_a_real_role_label_deep_in_a_long_page_beats_shallow_bio_decoys():
+    """Lighthouse Montessori lists its English teacher ("J. angielski |
+    Karolina Kaniowska") at char ~34,000 of a 42,000-char staff page,
+    behind several teachers who merely STUDIED English philology
+    ("ukończyła filologię angielską"). The 8,000-char cap kept the shallow
+    bio decoys and cut the real role label, so the teacher was missed. A
+    window carrying a real role label must outrank a bio mention for the
+    truncation budget."""
+    from levelup.services.enrichment.scraper import _cap_for_llm, _MAX_LLM_PAGE_CHARS
+
+    head = "Dyrektor szkoły Maria Antoszkiewicz. " * 160          # ~6k head, no teacher
+    decoys = "Nauczycielka klas I-III Anna Rybarczyk ukończyła filologię angielską na UW. " * 240  # ~18k of bio decoys
+    real = "J. angielski Karolina Kaniowska prowadzi zajęcia. "     # the real role label, deep
+    text = head + decoys + real + ("Inne treści o szkole. " * 200)
+    assert len(text) > _MAX_LLM_PAGE_CHARS
+
+    capped = _cap_for_llm(text)
+    assert len(capped) <= _MAX_LLM_PAGE_CHARS
+    assert "Karolina Kaniowska" in capped, "the real English teacher's role label must survive the cap"

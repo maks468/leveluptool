@@ -1847,6 +1847,25 @@ _TRUNCATION_HEAD_CHARS = 6_000
 _TRUNCATION_WINDOW_CHARS = 500
 _TRUNCATION_MARKER = chr(10) + "[...]" + chr(10)
 _TRUNCATION_ROLE_RE = re.compile(r"angiel|dyrektor", re.IGNORECASE)
+# A role LABEL ("J. angielski: Anna", "nauczyciel jezyka angielskiego"),
+# as opposed to a biography mention ("ukonczyla filologie angielska",
+# "czyta poezje angielskiego romantyzmu"). On a long staff page the two
+# compete for the same truncation budget, and the decoys often come
+# first -- Lighthouse Montessori lists its real English teachers ("J.
+# angielski | Karolina Kaniowska") at char 34,000 of a 42,000-char page,
+# behind several teachers who merely STUDIED English philology, so the
+# 8,000-char cap kept the decoys and cut the real ones. A role label
+# needs a role word ("j.", "jezyk", "nauczyciel", "lektor", "anglist")
+# bound to "angielski" -- "filologia angielska" has none of those.
+_TRUNCATION_STRONG_ROLE_RE = re.compile(
+    r"(?:j\.\s*angielski"
+    r"|j(?:ę|e)zyk\w*\s+angielski"
+    r"|nauczyciel\w*\s+(?:j\.\s*|j(?:ę|e)zyk\w*\s+)?angielski"
+    r"|lektor\w*\s+(?:j\.\s*|j(?:ę|e)zyk\w*\s+)?angielski"
+    r"|anglist"
+    r"|dyrektor)",
+    re.IGNORECASE,
+)
 
 
 def _merge_interval(merged: list[list[int]], start: int, end: int) -> tuple[list[list[int]], int]:
@@ -1887,21 +1906,32 @@ def _cap_for_llm(text: str) -> str:
     # ranked so name-bearing ones are taken first, and only the selected
     # ones are merged and emitted in document order. Same budget, same
     # token cost, but the part that can actually name a teacher survives.
-    candidates: list[tuple[int, int, bool]] = []
+    candidates: list[tuple[int, int, bool, bool]] = []
     for match in _TRUNCATION_ROLE_RE.finditer(tail):
         start = max(0, match.start() - _TRUNCATION_WINDOW_CHARS)
         end = min(len(tail), match.end() + _TRUNCATION_WINDOW_CHARS)
-        candidates.append((start, end, bool(_NAME_GROUP_RE.search(tail[start:end]))))
+        window = tail[start:end]
+        named = bool(_NAME_GROUP_RE.search(window))
+        strong = bool(_TRUNCATION_STRONG_ROLE_RE.search(window))
+        candidates.append((start, end, named, strong))
 
     if not candidates:  # nothing role-relevant later on -- old contiguous cut
         return text[:_MAX_LLM_PAGE_CHARS]
 
     budget = _MAX_LLM_PAGE_CHARS - len(head)
-    ordered = [c for c in candidates if c[2]] + [c for c in candidates if not c[2]]
+    # A window naming a person via a real role LABEL is the most valuable
+    # thing on the page; a window merely naming a person is next; anything
+    # else last. Ranking strong-role windows first is what lets a real "J.
+    # angielski | Name" deep in the page beat shallow "filologia angielska"
+    # decoys for the same budget.
+    strong_named = [c for c in candidates if c[2] and c[3]]
+    named = [c for c in candidates if c[2] and not c[3]]
+    rest = [c for c in candidates if not c[2]]
+    ordered = strong_named + named + rest
 
     merged: list[list[int]] = []
     used = 0
-    for start, end, _named in ordered:
+    for start, end, _named, _strong in ordered:
         if used >= budget:
             break
         # Charge only characters not already covered. Summing the overlap
