@@ -169,3 +169,27 @@ def test_location_awareness_does_not_disturb_a_single_school_email():
         == "sekretariat@sp7.gizycko.pl"
     assert pick_general_email(["sekretariat@sp7.gizycko.pl"], "PRIMARY", "SP NR 7", None, None) \
         == "sekretariat@sp7.gizycko.pl"
+
+
+def test_an_office_box_on_the_schools_own_domain_beats_a_siblings():
+    """A crawl that touches a sibling institution's page picks up that
+    sibling's office box -- one school on plomien.edu.pl was stored with
+    info@wegielek.edu.pl, the Węgiełek institution's inbox. With the
+    school's own domain known, an own-domain candidate must win; the
+    Polish public suffixes (.edu.pl) must not collapse both to "edu.pl"."""
+    from levelup.services.enrichment.jobs import pick_general_email
+
+    got = pick_general_email(
+        ["info@wegielek.edu.pl", "sekretariat@plomien.edu.pl"],
+        "PRIMARY", "SP DLA DZIEWCZĄT PŁOMIEŃ", None, None, "plomien.edu.pl",
+    )
+    assert got == "sekretariat@plomien.edu.pl"
+    # Preference, not veto: with no own-domain candidate, off-domain still wins.
+    assert pick_general_email(
+        ["info@wegielek.edu.pl"], "PRIMARY", "SP PŁOMIEŃ", None, None, "plomien.edu.pl"
+    ) == "info@wegielek.edu.pl"
+    # Campus match still outranks plain domain match on a shared domain.
+    assert pick_general_email(
+        ["centrum@tevizja.pl", "wawer@tevizja.pl"], "LICEUM", "LO TE VIZJA",
+        None, ["wawer"], "tevizja.pl",
+    ) == "wawer@tevizja.pl"

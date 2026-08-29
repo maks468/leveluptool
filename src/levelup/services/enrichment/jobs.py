@@ -19,6 +19,7 @@ from levelup.services.enrichment import llm_extract
 from levelup.services.enrichment.rspo_detail import fetch_rspo_detail, parse_director_and_contacts
 from levelup.services.enrichment.scraper import (
     _COMMON_POLISH_FIRST_NAMES,
+    _registrable_domain,
     _NAV_NOISE_HOSTS,
     download_for_vision,
     _mentions_school_city,
@@ -474,6 +475,7 @@ def _school_location_tokens(school) -> list[str]:
 def pick_general_email(
     candidates: list[str], school_level: str, school_name: str, rspo_email: str | None,
     school_location: list[str] | None = None,
+    site_domain: str | None = None,
 ) -> str | None:
     """The school's general office box, chosen from every unclaimed
     candidate. Preference order per criterion (lower wins):
@@ -523,7 +525,21 @@ def pick_general_email(
         first_seg = re.split(r"[._-]", local, 1)[0].lower()
         loc_match = 0 if any(tok in norm_local for tok in (school_location or [])) else 1
         hq = 0 if (first_seg in _HQ_LOCAL_PARTS or local.lower() in _HQ_LOCAL_PARTS) else 1
-        return (personal, number_conflict, loc_match, level_pref, hq, campaign_email_tier(email), rspo_tiebreak)
+        # An address on the school's OWN domain beats one on anybody
+        # else's. A crawl that touches a sibling institution's page picks
+        # up that sibling's office box, and with nothing anchoring the
+        # choice to this school's domain it could win the slot -- one
+        # school on plomien.edu.pl was stored with info@wegielek.edu.pl,
+        # the Wegielek institution's inbox. Only a preference, never a
+        # veto: plenty of schools genuinely run their office mailbox on
+        # freemail or the gmina's domain, and those still win when no
+        # own-domain candidate exists.
+        email_reg = _registrable_domain(email.split("@")[-1].lower())
+        domain_match = 0 if (site_domain and email_reg == site_domain) else 1
+        return (
+            personal, number_conflict, loc_match, domain_match,
+            level_pref, hq, campaign_email_tier(email), rspo_tiebreak,
+        )
 
     return min(candidates, key=rank)
 
@@ -856,7 +872,21 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
     # hit cannot poison contacts. Gated on "found nothing first-party" so
     # the extra call is only paid on the schools it can actually help.
     first_party_pages = [p for p in (result.get("llm_pages") or []) if not p.get("third_party")]
-    if not first_party_pages and llm_extract.is_llm_usable():
+    # "Found a site" is not the same as "found THE site". A hub or parent-
+    # foundation domain responds happily while proving nothing about this
+    # school -- BEDNARSKA's complex hub served pages whose staff slugs all
+    # 404'd, and MILANOWSKA's stored site is its foundation's. So the
+    # trigger is not "no pages" but "no page that could prove a writeable
+    # role" (the same provability test the extraction itself uses): a
+    # wrong-but-responsive site fails it just like a dead one.
+    _provable = llm_extract.pages_that_could_prove(
+        [
+            llm_extract.PreparedPage(url=p["url"], text=p["text"], tier=p["tier"], third_party=False)
+            for p in first_party_pages
+        ],
+        ("director", "english_teacher"),
+    )
+    if not _provable and llm_extract.is_llm_usable():
         usage: dict = {}
         found_site = llm_extract.find_school_website(school.name, school.city, usage_out=usage)
         llm_stats_websearch = usage
@@ -870,7 +900,14 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
                 staff_page_picker=picker,
                 city=school.city,
             )
-            retry_first_party = [p for p in (retry.get("llm_pages") or []) if not p.get("third_party")]
+            retry_first_party = llm_extract.pages_that_could_prove(
+                [
+                    llm_extract.PreparedPage(url=p["url"], text=p["text"], tier=p["tier"], third_party=False)
+                    for p in (retry.get("llm_pages") or [])
+                    if not p.get("third_party")
+                ],
+                ("director", "english_teacher"),
+            )
             if retry_first_party:
                 # The searched-and-verified site actually produced content --
                 # adopt it, and record the corrected URL so it is stored.
@@ -1109,8 +1146,12 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
     # authoritative source. Personal addresses are already claimed
     # above, so this slot is always the general office contact.
     rspo_email = rspo_info.get("email")
+    _own_site = result.get("discovered_website_url") or effective_website or ""
+    _own_host = _own_site.split("//")[-1].split("/")[0].lower().removeprefix("www.")
+    _own_domain = _registrable_domain(_own_host) if _own_host else None
     general_email = pick_general_email(
-        unclaimed, school_level, school.name, rspo_email, _school_location_tokens(school)
+        unclaimed, school_level, school.name, rspo_email,
+        _school_location_tokens(school), _own_domain,
     )
 
     if director_name:
