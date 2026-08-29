@@ -796,6 +796,40 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
     )
     _mark("crawl")
 
+    # WEBSITE RESOLUTION. RSPO's website field is frequently blank or wrong,
+    # and the email-domain guess only helps when RSPO also gave us an email.
+    # When the crawl came back with NO first-party page of its own -- the
+    # site was unreachable, unverifiable, or never known -- ask the model to
+    # web-search for the school's real site (its own WebSearch tool, since
+    # the scraped-search path is CAPTCHA-walled in this environment). The
+    # result is only a CANDIDATE: scrape_school_website re-verifies it via
+    # _verify_school_site before trusting anything on it, so a wrong search
+    # hit cannot poison contacts. Gated on "found nothing first-party" so
+    # the extra call is only paid on the schools it can actually help.
+    first_party_pages = [p for p in (result.get("llm_pages") or []) if not p.get("third_party")]
+    if not first_party_pages and llm_extract.is_llm_usable():
+        usage: dict = {}
+        found_site = llm_extract.find_school_website(school.name, school.city, usage_out=usage)
+        llm_stats_websearch = usage
+        already_tried = {(effective_website or "").lower().rstrip("/"),
+                         (result.get("discovered_website_url") or "").lower().rstrip("/")}
+        if found_site and found_site.lower().rstrip("/") not in already_tried:
+            retry = scrape_school_website(
+                school.name,
+                found_site,
+                rspo_email=rspo_info.get("email"),
+                staff_page_picker=picker,
+                city=school.city,
+            )
+            retry_first_party = [p for p in (retry.get("llm_pages") or []) if not p.get("third_party")]
+            if retry_first_party:
+                # The searched-and-verified site actually produced content --
+                # adopt it, and record the corrected URL so it is stored.
+                result = retry
+                result["discovered_website_url"] = retry.get("discovered_website_url") or found_site
+                result["website_found_by_search"] = found_site
+        _mark("website_search")
+
     # Special-education population(s) detected from the site,
     # the school's own name, AND RSPO's own authoritative
     # "specificity" field (see rspo_detail.py) -- a school run

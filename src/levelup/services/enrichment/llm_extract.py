@@ -85,6 +85,11 @@ _ISOLATED_CWD = str(_ISOLATED_CWD_PATH)
 MAX_VISION_CALLS_PER_SCHOOL = 3
 # One turn to call Read, one to answer, plus headroom for a thinking block.
 VISION_MAX_TURNS = 4
+# A web search often needs SEVERAL turns -- an initial search, a refined
+# second search when the first is ambiguous, then the answer -- so it
+# gets a larger budget than a single-file Read (confirmed: 4 turns ran
+# out mid-search for a school with several same-named siblings).
+WEBSITE_SEARCH_MAX_TURNS = 8
 
 # Backstops, not the primary limiter: pages_that_could_prove() below
 # removes pages that provably cannot yield a writeable record, which is
@@ -853,6 +858,58 @@ def _unstage(staged: str) -> None:
         os.remove(staged)
     except OSError:
         pass
+
+
+_WEBSITE_FINDER_SYSTEM_PROMPT = """You find the OFFICIAL website of one specific Polish school, using web search.
+
+You are given the school's exact name and city. Search for it and return the URL of ITS OWN official site -- the school's homepage or the section of a school-complex site that belongs to THIS school.
+
+Rules:
+- Return the school's own site, not a directory listing (rspo.gov.pl, szkolnictwo.pl, edubaza, mapaszkol, panoramafirm, targeo), not a news article, not Facebook, not a ranking site.
+- The name must match. Polish towns often have several schools of the same number/patron; use the CITY to disambiguate. If you cannot find a site that clearly matches THIS school in THIS city, return NONE.
+- A school that is part of a complex (Zespół Szkół) may share a domain -- returning that domain is fine.
+- Return ONLY the bare URL on a single line, or exactly NONE. No explanation, no markdown."""
+
+
+def find_school_website(school_name: str, city: str | None = None, *, usage_out: dict | None = None) -> str | None:
+    """The school's official site, found by web search -- for when RSPO has
+    no website (or a wrong one) and the email-domain guess led nowhere.
+
+    Uses the model's own WebSearch tool rather than scraping a search-engine
+    results page: the scraped path (Startpage/DuckDuckGo) gets CAPTCHA-walled
+    under any real volume, confirmed dead in this environment, whereas the
+    model's search is not rate-limited the same way. The URL returned here is
+    still just a CANDIDATE -- the caller must fetch and _verify_school_site it
+    before trusting it, exactly as it does for an email-derived guess, so a
+    wrong search hit cannot poison a school's contacts. Returns None on any
+    failure or when the model reports no confident match."""
+    if not SDK_AVAILABLE:
+        return None
+    where = f" in {city}" if city else ""
+    prompt = f"Find the official website of this school: {school_name}{where}, Poland."
+    try:
+        text, usage = _run_sync(
+            _run_query(
+                prompt,
+                system_prompt=_WEBSITE_FINDER_SYSTEM_PROMPT,
+                model=HAIKU_MODEL,
+                allowed_tools=["WebSearch"],
+                max_turns=WEBSITE_SEARCH_MAX_TURNS,
+            )
+        )
+    except CliUnavailableError:
+        return None
+    if usage_out is not None:
+        usage_out.update(usage)
+    if not text:
+        return None
+    # The model was told to answer with a bare URL or NONE; take the first
+    # http(s) token and ignore any stray narration.
+    match = re.search(r"https?://\S+", text)
+    if not match:
+        return None
+    url = match.group(0).rstrip(".,;)'\"<>")
+    return url
 
 
 def extract_from_image(
