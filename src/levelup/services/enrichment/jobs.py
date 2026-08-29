@@ -434,8 +434,46 @@ def _clean_person_name(name: str | None) -> str | None:
     return _normalize_name_order(cleaned) or cleaned
 
 
+# HQ/office local parts for a multi-campus group -- a shared domain whose
+# mailboxes are keyed by CAMPUS (mokotow@, ochota@, wawer@, gdansk@ at TE
+# VIZJA) plus a central one. GENERIC_OFFICE_LOCAL_PARTS covers the ordinary
+# office words; these add the "central office of a group" words, so that a
+# school with no campus-matching mailbox falls back to the HQ box rather
+# than to some OTHER campus's inbox.
+_HQ_LOCAL_PARTS = GENERIC_OFFICE_LOCAL_PARTS | {
+    "centrum", "centrala", "glowna", "łłowna", "głowna", "zarzad", "hq", "sekretariat.glowny",
+}
+_DIACRITIC = str.maketrans("ąćęłńóśźż", "acelnoszz")
+
+
+def _norm_loc(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.lower().translate(_DIACRITIC))
+
+
+def _school_location_tokens(school) -> list[str]:
+    """The place tokens that identify THIS campus -- its district
+    (RSPO "Miejscowosc", e.g. Wola/Wawer/Wlochy for a Warsaw group), its
+    town, and its street name. Used to match a campus-keyed office mailbox
+    to the right branch."""
+    tokens: list[str] = []
+    raw = school.raw_import_row or {}
+    for key in ("Miejscowość", "Miejscowosc", "Ulica", "Dzielnica"):
+        val = raw.get(key)
+        if val:
+            for word in re.split(r"[\s.,/-]+", str(val)):
+                w = _norm_loc(word)
+                if len(w) >= 4 and w not in {"ulica", "miasto", "aleja"}:
+                    tokens.append(w)
+    if school.city:
+        c = _norm_loc(school.city)
+        if len(c) >= 4:
+            tokens.append(c)
+    return list(dict.fromkeys(tokens))
+
+
 def pick_general_email(
-    candidates: list[str], school_level: str, school_name: str, rspo_email: str | None
+    candidates: list[str], school_level: str, school_name: str, rspo_email: str | None,
+    school_location: list[str] | None = None,
 ) -> str | None:
     """The school's general office box, chosen from every unclaimed
     candidate. Preference order per criterion (lower wins):
@@ -460,7 +498,7 @@ def pick_general_email(
     name_match = _SCHOOL_NR_RE.search(school_name or "")
     school_number = name_match.group(1) if name_match else None
 
-    def rank(email: str) -> tuple[int, int, int, int]:
+    def rank(email: str) -> tuple:
         hint = email_level_hint(email)
         if hint == school_level:
             level_pref = 0
@@ -474,7 +512,18 @@ def pick_general_email(
         ) else 0
         rspo_tiebreak = 0 if email == rspo_email else 1
         personal = 1 if _looks_like_one_persons_mailbox(email) else 0
-        return (personal, number_conflict, level_pref, campaign_email_tier(email), rspo_tiebreak)
+        # Campus match. On a group's shared domain the office boxes are
+        # keyed by campus (wawer@, mokotow@, ...). Prefer the one whose
+        # local part carries THIS school's district/town/street; failing
+        # that, prefer a central/HQ box over a DIFFERENT campus's inbox --
+        # sending a Wawer school's mail to mokotow@ is worse than to the
+        # group's centrum@.
+        local = email.split("@")[0]
+        norm_local = _norm_loc(local)
+        first_seg = re.split(r"[._-]", local, 1)[0].lower()
+        loc_match = 0 if any(tok in norm_local for tok in (school_location or [])) else 1
+        hq = 0 if (first_seg in _HQ_LOCAL_PARTS or local.lower() in _HQ_LOCAL_PARTS) else 1
+        return (personal, number_conflict, loc_match, level_pref, hq, campaign_email_tier(email), rspo_tiebreak)
 
     return min(candidates, key=rank)
 
@@ -1060,7 +1109,9 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
     # authoritative source. Personal addresses are already claimed
     # above, so this slot is always the general office contact.
     rspo_email = rspo_info.get("email")
-    general_email = pick_general_email(unclaimed, school_level, school.name, rspo_email)
+    general_email = pick_general_email(
+        unclaimed, school_level, school.name, rspo_email, _school_location_tokens(school)
+    )
 
     if director_name:
         _upsert_contact(

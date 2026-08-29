@@ -137,3 +137,35 @@ def test_an_undeliverable_only_candidate_is_still_returned_over_nothing():
     from levelup.services.enrichment.jobs import pick_general_email
 
     assert pick_general_email(["biuro@zoltylatawiec.p"], "PRIMARY", "SZKOŁA", None) == "biuro@zoltylatawiec.p"
+
+
+def test_a_multi_campus_group_email_matches_the_schools_own_campus():
+    """TE VIZJA is one domain (tevizja.pl) with per-campus office boxes
+    (wawer@, mokotow@, ochota@, gdansk@) plus a central centrum@. The
+    picker saw them as tied and chose arbitrarily -- a Wola primary got
+    mokotow@, a different campus. Now a school whose district matches a
+    campus box gets it; one with no matching campus falls back to the HQ
+    box, never to some OTHER campus."""
+    from levelup.services.enrichment.jobs import pick_general_email
+
+    emails = ["centrum@tevizja.pl", "gdansk@tevizja.pl", "mokotow@tevizja.pl",
+              "ochota@tevizja.pl", "wawer@tevizja.pl", "przedszkole@tevizja.pl"]
+
+    # A Wawer school gets its own campus box.
+    assert pick_general_email(emails, "PRIMARY", "SP TE VIZJA", None, ["wawer"]) == "wawer@tevizja.pl"
+    # A Wola school -- no wola@ box exists -- gets the HQ box, NOT another campus.
+    assert pick_general_email(emails, "PRIMARY", "SP TE VIZJA", None, ["wola", "okopowa"]) == "centrum@tevizja.pl"
+    # A Włochy school likewise falls back to HQ, never to mokotow@/ochota@.
+    got = pick_general_email(emails, "LICEUM", "LO TE VIZJA", None, ["wlochy"])
+    assert got == "centrum@tevizja.pl"
+
+
+def test_location_awareness_does_not_disturb_a_single_school_email():
+    """The common case -- one ordinary school, one office box -- must be
+    unaffected whether or not a location is supplied."""
+    from levelup.services.enrichment.jobs import pick_general_email
+
+    assert pick_general_email(["sekretariat@sp7.gizycko.pl"], "PRIMARY", "SP NR 7", None, ["gizycko"]) \
+        == "sekretariat@sp7.gizycko.pl"
+    assert pick_general_email(["sekretariat@sp7.gizycko.pl"], "PRIMARY", "SP NR 7", None, None) \
+        == "sekretariat@sp7.gizycko.pl"
