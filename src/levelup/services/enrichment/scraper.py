@@ -1395,6 +1395,22 @@ def _find_subpage_links(soup: BeautifulSoup, base_url: str, school_name: str = "
             or _is_bare_hub_label(label, paired_bare_labels)
         ):
             tier = -1
+        elif (
+            school_name
+            and _is_own_school_hub_link(label, school_name)
+            and urlparse(base_url).path.strip("/") == ""
+            and urlparse(full).path.strip("/") != ""
+        ):
+            # A complex can tile its member schools as PATHS on one host,
+            # not subdomains: lauder-morasha.edu.pl's splash links "Szkoła
+            # Podstawowa" to /szkola, behind which the real staff pages
+            # live -- and the different-host requirement above left that
+            # tile with no tier at all, so the crawl fell back to guessing
+            # slugs (/sp, /szkola-podstawowa) that don't exist. Only from
+            # the DOMAIN ROOT, though: deeper pages' own nav re-matches
+            # level words forever (the ekola.edu.pl/liceum/ budget burn
+            # the different-host rule exists to prevent).
+            tier = 0
         else:
             # BUG FIX: matching "bip" against the full href+label haystack
             # meant EVERY individual document a school's own BIP section

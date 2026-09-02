@@ -143,3 +143,29 @@ def test_usage_limit_from_picker_still_propagates():
     except UsageLimitError:
         return
     raise AssertionError("UsageLimitError must propagate out of the picker")
+
+
+def test_a_complex_splash_that_tiles_its_schools_as_paths_is_followed():
+    """lauder-morasha.edu.pl's homepage is a three-tile splash: Przedszkole
+    -> /przedszkole/, Szkoła Podstawowa -> /szkola, Liceum -> external. The
+    hub rule only recognized a member school on a DIFFERENT host, so the
+    SP's own tile got no tier, the crawl fell back to guessing slugs that
+    don't exist, and the teacher (on /szkola/grono-pedagogiczne/) stayed
+    invisible. From the domain root, a same-host level tile is followed."""
+    from bs4 import BeautifulSoup
+    from levelup.services.enrichment.scraper import _find_subpage_links
+
+    splash = BeautifulSoup(
+        '<a href="/przedszkole/">Przedszkole</a>'
+        '<a href="/szkola">Szkoła Podstawowa Lauder-Morasha</a>'
+        '<a href="https://ginczanka.edu.pl/">Liceum</a>',
+        "html.parser",
+    )
+    got = _find_subpage_links(splash, "http://www.lauder-morasha.edu.pl", 'PRYWATNA SZKOŁA PODSTAWOWA NR 94 "LAUDER MORASHA"')
+    assert ("http://www.lauder-morasha.edu.pl/szkola" in dict((u, t) for t, u in got)), got
+
+    # ...but the same label DEEP inside a subsite must not re-match (the
+    # ekola.edu.pl/liceum/ budget burn the different-host rule prevents).
+    deep = BeautifulSoup('<a href="/liceum/zasady">Zasady liceum</a>', "html.parser")
+    got_deep = _find_subpage_links(deep, "https://ekola.edu.pl/liceum/", "LICEUM EKOLA")
+    assert all(t != 0 for t, _ in got_deep), got_deep
