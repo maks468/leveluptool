@@ -547,9 +547,14 @@ def _normalize_ws(text: str) -> str:
 # mentioning both the director and a deputy is ambiguous, so it proves
 # neither and the record is dropped.
 _ROLE_EVIDENCE_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "director": ("dyrektor", "principal", "headmaster", "headmistress"),
-    "deputy_director": ("wicedyrektor", "zastępca", "z-ca", "vice-principal", "deputy"),
-    "english_teacher": ("angielsk", "anglist", "english"),
+    # International schools in this register publish in their partner
+    # language -- wbs.pl (a real Warsaw primary) is German-only, its staff
+    # page says "Englisch" and "Schulleiter", never "angielski" or
+    # "dyrektor", so both the provability filter and the grounding gate
+    # rejected every record the site could ever yield.
+    "director": ("dyrektor", "principal", "headmaster", "headmistress", "schulleit", "direktor"),
+    "deputy_director": ("wicedyrektor", "zastępca", "z-ca", "vice-principal", "deputy", "stellvertret"),
+    "english_teacher": ("angielsk", "anglist", "english", "englisch"),
 }
 _DEPUTY_MARKERS = ("wicedyrektor", "zastępc", "z-ca", "p.o.", "wice-", "vice", "deputy")
 

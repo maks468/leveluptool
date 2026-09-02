@@ -2049,7 +2049,13 @@ def _extract(html: str, url: str, school_name: str = "") -> dict:
     # szkolnastrona.pl and edupage.org sites). Detecting it lets enrichment
     # report *why* nothing was found instead of a silent, misleading blank.
     mount = soup.find(id="root") or soup.find(id="app")
-    js_app_shell = bool(mount) and len(re.sub(r"\s+", "", text)) < 250
+    # A shell is not always a React/Vue mount div: ekola.edu.pl ships 127KB
+    # of Elementor markup that renders 20 visible characters, with the whole
+    # nav built by JS -- no id="root"/"app" anywhere. Markup that heavy with
+    # text that empty cannot be a real content page either way, so it gets
+    # the same treatment (and thereby the browser-rendering fallback).
+    _tiny_text = len(re.sub(r"\s+", "", text)) < 250
+    js_app_shell = _tiny_text and (bool(mount) or len(html) > 20000)
 
     # BUG FIX: the mount+near-empty check above only catches a shell with
     # almost NO content at all -- it misses the far more common real-world
