@@ -181,3 +181,31 @@ def test_the_existing_shapes_still_parse():
     # A brace inside a string must not end the object early.
     assert llm_extract._parse_json_response('x{"notes": "a { brace", "staff": []}')["notes"] == "a { brace"
     assert llm_extract._parse_json_response("no json here") is None
+
+
+def test_a_complex_hubs_rosters_are_read_own_school_first():
+    """szkolysalezjanskie.pl links five rosters -- preschool group 0,
+    SP klasy 1-3, SP klasy 4-8, liceum, branżowa -- and reading them in
+    document order attributed the PRESCHOOL group-0C English teacher to
+    both the SP and the LICEUM. A file naming another level is read last,
+    not skipped."""
+    urls = [
+        "https://www.szkolysalezjanskie.pl/wp-content/uploads/2025/10/KADRA-2025-2026-GRUPY-0-.pdf",
+        "https://www.szkolysalezjanskie.pl/wp-content/uploads/2025/10/KADRA-2025-2026-klasy-1-3-SP.pdf",
+        "https://www.szkolysalezjanskie.pl/wp-content/uploads/2025/10/KADRA-PEDAGOGICZNA-4-8.pdf",
+        "https://www.szkolysalezjanskie.pl/wp-content/uploads/2024/09/KADRA-PEDAGOGICZNA-Liceum-Ogolnoksztalcace.pdf",
+        "https://www.szkolysalezjanskie.pl/wp-content/uploads/2024/09/KADRA-PEDAGOGICZNA-Branzowa-Szkola-na-strone.pdf",
+    ]
+    page = _page(*urls)
+
+    got_sp = _vision_candidates([page], limit=3, school_level="PRIMARY")
+    assert "4-8" in got_sp[0], got_sp                       # the SP reads its own 4-8 roster first
+    assert all("Liceum" not in u and "Branzowa" not in u for u in got_sp[:2]), got_sp
+
+    got_lo = _vision_candidates([page], limit=3, school_level="LICEUM")
+    assert "Liceum" in got_lo[0], got_lo                    # the liceum reads ITS roster first
+    assert "GRUPY-0" not in got_lo[0], got_lo
+
+    # Without a level (or an unknown one), document order is preserved.
+    got_plain = _vision_candidates([page], limit=3)
+    assert got_plain[0] == urls[0]

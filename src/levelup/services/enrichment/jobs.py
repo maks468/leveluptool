@@ -170,7 +170,40 @@ _NOT_A_ROSTER_RE = re.compile(
 _VISION_EXTENSIONS = (".pdf", ".jpg", ".jpeg", ".png")
 
 
-def _vision_candidates(llm_pages: list[dict], limit: int) -> list[str]:
+# WHICH school's roster a file is, judged from its filename -- on a complex
+# hub every sibling school links every roster, and reading them in document
+# order attributed the PRESCHOOL group-0 English teacher to both the SP and
+# the LICEUM at szkolysalezjanskie.pl (KADRA-2025-2026-GRUPY-0-.pdf simply
+# comes first). A file naming another level is read LAST, not skipped: the
+# complex may publish one combined roster under any of these names.
+_VISION_PRESCHOOL_RE = re.compile(r"przedszkol|grupy[-_ ]?0|zerowk|oddzial[-_ ]?0", re.IGNORECASE)
+_VISION_LEVEL_RES = {
+    "PRIMARY": re.compile(r"podstawow|klasy|[-_.]sp[-_.]|1-3|4-8", re.IGNORECASE),
+    "LICEUM": re.compile(r"liceum|ogolnoksztalc|[-_.]lo[-_.]", re.IGNORECASE),
+    "TECHNIKUM": re.compile(r"technikum", re.IGNORECASE),
+}
+
+
+def _vision_rank(url: str, school_level: str | None) -> int:
+    """Lower reads first: this school's own roster, then a specific 4-8
+    roster for a primary, then unlabelled files, then the preschool group
+    roster, then a SIBLING school's roster."""
+    if not school_level or school_level not in _VISION_LEVEL_RES:
+        return 2
+    low = url.lower()
+    for level, rx in _VISION_LEVEL_RES.items():
+        if level != school_level and rx.search(low):
+            return 4
+    if _VISION_PRESCHOOL_RE.search(low):
+        return 3
+    if school_level == "PRIMARY" and "4-8" in low:
+        return 0  # the grades this outreach is about -- beats a 1-3 roster
+    if _VISION_LEVEL_RES[school_level].search(low):
+        return 1
+    return 2
+
+
+def _vision_candidates(llm_pages: list[dict], limit: int, school_level: str | None = None) -> list[str]:
     """Roster-looking media linked from the school's own kept pages."""
     out: list[str] = []
     for url in _roster_media_urls(llm_pages, limit=40):
@@ -183,9 +216,9 @@ def _vision_candidates(llm_pages: list[dict], limit: int) -> list[str]:
             continue
         if url not in out:
             out.append(url)
-        if len(out) >= limit:
-            break
-    return out
+    document_order = {url: i for i, url in enumerate(out)}
+    out.sort(key=lambda u: (_vision_rank(u, school_level), document_order[u]))
+    return out[:limit]
 
 
 def _run_vision_extraction(result: dict, school: School, needed_roles: set[str]):
@@ -205,7 +238,9 @@ def _run_vision_extraction(result: dict, school: School, needed_roles: set[str])
     if not needed_roles or not llm_extract.is_llm_usable():
         return None, stats
     candidates = _vision_candidates(
-        result.get("llm_pages") or [], llm_extract.MAX_VISION_CALLS_PER_SCHOOL
+        result.get("llm_pages") or [],
+        llm_extract.MAX_VISION_CALLS_PER_SCHOOL,
+        school_level=school.level,
     )
     if not candidates:
         return None, stats
