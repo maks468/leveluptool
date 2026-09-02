@@ -259,6 +259,13 @@ async def _run_query(
         model=model,
         env=_child_env(),
         cwd=_ISOLATED_CWD,
+        # A Read of a large roster PDF comes back as ONE JSON message, and
+        # the SDK's default 1MB buffer kills the call ("JSON message
+        # exceeded maximum buffer size") -- szkolysalezjanskie.pl's
+        # KADRA-PEDAGOGICZNA-4-8.pdf did exactly that, so its school could
+        # never read the one file naming its teachers. 32MB covers any
+        # roster the 10MB download cap lets through.
+        max_buffer_size=32 * 1024 * 1024,
     )
     final_text: str | None = None
     usage = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}

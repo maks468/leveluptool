@@ -265,7 +265,10 @@ def _run_vision_extraction(result: dict, school: School, needed_roles: set[str])
             )
             extraction = reader(path, url, school.name, school.city, usage_out=usage)
         except llm_extract.CliUnavailableError:
-            return None, stats
+            # One oversized or malformed file must not abort the remaining
+            # candidates -- the next roster may be the readable one. A
+            # genuinely missing CLI just fails fast on each candidate.
+            continue
         finally:
             try:
                 os.remove(path)
