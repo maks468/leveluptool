@@ -188,6 +188,7 @@ def _vision_rank(url: str, school_level: str | None) -> int:
     """Lower reads first: this school's own roster, then a specific 4-8
     roster for a primary, then unlabelled files, then the preschool group
     roster, then a SIBLING school's roster."""
+    school_level = getattr(school_level, "value", school_level)  # SchoolLevel enum or str
     if not school_level or school_level not in _VISION_LEVEL_RES:
         return 2
     low = url.lower()
@@ -273,7 +274,17 @@ def _run_vision_extraction(result: dict, school: School, needed_roles: set[str])
         if extraction is None:
             continue
         extraction = llm_extract.ground_vision_extraction(extraction, school_website_domain=domain)
-        merged.extend(r for r in extraction.staff if r.role in needed_roles)
+        # A record whose own evidence says PRESCHOOL ("Edukacja
+        # przedszkolna ... 0 C") can belong to a primary -- SPs run
+        # oddzialy 0 -- but never to a liceum or technikum, which have no
+        # preschool. On a complex hub the group-0 roster sits next to the
+        # liceum's, and this is the last line of defence when the
+        # liceum's own roster read yields nothing.
+        level_value = getattr(school.level, "value", school.level)
+        records = extraction.staff
+        if level_value in ("LICEUM", "TECHNIKUM"):
+            records = [r for r in records if not _VISION_PRESCHOOL_RE.search(r.evidence or "")]
+        merged.extend(r for r in records if r.role in needed_roles)
         if {r.role for r in merged} >= needed_roles:
             break  # every role we came for is proven; stop paying
     if not merged:
