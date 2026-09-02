@@ -2486,6 +2486,66 @@ _SCHOOL_TITLE_KEYWORDS = (
 )
 
 
+_SITEMAP_STAFF_URL_RE = re.compile(
+    r"kadra|nauczyciel|zespol|zespół|grono|pracownic|team|staff|kollegium|lehrer|wychowawc",
+    re.IGNORECASE,
+)
+_SITEMAP_LOC_RE = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>")
+_SITEMAP_PATHS = ("/wp-sitemap.xml", "/sitemap_index.xml", "/sitemap.xml")
+_MAX_SITEMAP_STAFF_URLS = 25
+
+
+def _sitemap_staff_urls(homepage: str) -> list[str]:
+    """Staff-related URLs from the site's own XML sitemap -- for a site
+    whose navigation is built entirely by JavaScript, so a plain fetch sees
+    no links at all. ekola.edu.pl ships 127KB of markup, 20 visible chars
+    and zero crawlable <a> tags, yet its wp-sitemap.xml plainly lists a
+    cpt_team sub-sitemap with a page per staff member. Fetches are cheap
+    and LLM-free; whatever comes back still passes the normal provability
+    and grounding gates, so this can only add coverage, not noise.
+
+    Returns same-domain URLs only: staff-keyword pages first, then the
+    members of a team/kadra custom-post-type sub-sitemap."""
+    base = homepage.rstrip("/")
+    if "//" not in base:
+        base = "http://" + base
+    own_domain = _registrable_domain(base.split("//")[-1].split("/")[0])
+    index_xml = None
+    for path in _SITEMAP_PATHS:
+        index_xml = fetch_page(base + path)
+        if index_xml and "<loc>" in index_xml:
+            break
+        index_xml = None
+    if not index_xml:
+        return []
+
+    def same_domain(url: str) -> bool:
+        return _registrable_domain(url.split("//")[-1].split("/")[0]) == own_domain
+
+    locs = [u for u in _SITEMAP_LOC_RE.findall(index_xml) if same_domain(u)]
+    pages: list[str] = [u for u in locs if not u.lower().endswith(".xml")]
+    # One level of sub-sitemaps, staff-suggestive ones first, at most 3 --
+    # a big WordPress site indexes posts/categories/media we never want.
+    subs = [u for u in locs if u.lower().endswith(".xml")]
+    subs.sort(key=lambda u: 0 if _SITEMAP_STAFF_URL_RE.search(u) else 1)
+    for sub in subs[:3]:
+        sub_xml = fetch_page(sub)
+        if sub_xml:
+            from_sub = [u for u in _SITEMAP_LOC_RE.findall(sub_xml) if same_domain(u) and not u.lower().endswith(".xml")]
+            if _SITEMAP_STAFF_URL_RE.search(sub):
+                # a team/kadra CPT sitemap: every entry is a staff page
+                pages.extend(from_sub)
+            else:
+                pages.extend(u for u in from_sub if _SITEMAP_STAFF_URL_RE.search(u))
+    keyworded = [u for u in pages if _SITEMAP_STAFF_URL_RE.search(u)]
+    rest = [u for u in pages if u not in keyworded]
+    out: list[str] = []
+    for u in keyworded + rest:
+        if u not in out:
+            out.append(u)
+    return out[:_MAX_SITEMAP_STAFF_URLS]
+
+
 def _verify_school_site(html: str) -> bool:
     """BUG FIX: the <title> alone is often too generic to tell anything
     from at all -- confirmed directly: a real school's own homepage had
@@ -2973,6 +3033,32 @@ def scrape_school_website(
                 frontier.extend(pair for pair in found["subpage_links"] if _dedup_key(pair[1]) not in visited)
             else:
                 sources_checked.append({"url": link, "status": _fetch_failure_status(link)})
+
+        # SITEMAP FALLBACK. The frontier is exhausted and the teacher is
+        # still missing -- on a JS-navigated site that is usually because a
+        # plain fetch never saw a single link to follow. The site's own XML
+        # sitemap lists what the nav would have (ekola.edu.pl: a cpt_team
+        # sub-sitemap with one page per staff member), so crawl its
+        # staff-looking URLs under the same budget and merge rules; the
+        # LLM-side provability and grounding gates still decide what, if
+        # anything, any of it proves.
+        if not _is_complete(result):
+            for sm_link in _sitemap_staff_urls(effective_homepage):
+                if pages_fetched >= MAX_SAME_SITE_PAGES + _MAX_SITEMAP_STAFF_URLS:
+                    break
+                if _dedup_key(sm_link) in visited:
+                    continue
+                visited.add(_dedup_key(sm_link))
+                time.sleep(REQUEST_DELAY_SECONDS)
+                sm_html = fetch_page(sm_link)
+                pages_fetched += 1
+                if sm_html:
+                    sources_checked.append({"url": sm_link, "status": "ok", "via_sitemap": True})
+                    _merge(result, _extract(sm_html, sm_link, school_name), tier=1)
+                else:
+                    sources_checked.append({"url": sm_link, "status": _fetch_failure_status(sm_link)})
+                if _is_complete(result):
+                    break
 
         # Never found the school's own dedicated subsite. The hub page is
         # NOT used as a data source anymore (accuracy policy): a shared
