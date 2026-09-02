@@ -39,7 +39,8 @@ def test_a_directors_address_gets_the_director_never_the_teacher():
     salutation, casual, who = salutations.recipient_columns("director", "Anna Kowalska", "Marek Nowak")
     assert who == "director"
     assert "Anno" not in salutation, "the teacher's name must not reach the director's inbox"
-    assert "Dyrektor" in salutation
+    # ...and the director is greeted as a person, by THEIR OWN first name.
+    assert "Marku" in salutation and "Marku" in casual
 
 
 def test_no_address_at_all_degrades_to_the_impersonal_opener():

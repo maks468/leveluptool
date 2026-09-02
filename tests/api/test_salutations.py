@@ -37,9 +37,12 @@ def test_teacher_indirect_via_secretariat():
     assert SECRETARIAT_SALUTATION == "Dzień dobry,"
 
 
-def test_director_direct_uses_title_not_name():
-    assert cols("Izabela Piaskowska", "director")["salutation"] == "Szanowna Pani Dyrektor,"
-    assert cols("Marek Zieliński", "director")["salutation"] == "Szanowny Panie Dyrektorze,"
+def test_a_named_director_is_greeted_as_a_person():
+    # Explicit request: the greeting addresses the PERSON, not the office,
+    # whenever the first name is known. The title survives only as the
+    # nameless fallback (tested below).
+    assert cols("Izabela Piaskowska", "director")["salutation"] == "Szanowna Pani Izabelo,"
+    assert cols("Marek Zieliński", "director")["salutation"] == "Szanowny Panie Marku,"
 
 
 def test_director_indirect_full_declension():

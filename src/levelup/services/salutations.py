@@ -401,10 +401,11 @@ SECRETARIAT_SALUTATION = "Dzień dobry,"
 
 def _salutation(role: str, gender: str | None, vocative: str | None) -> str:
     """Direct-address opener, formal register ("Szanowna Pani Anno,").
-    Directors get the title form -- Polish etiquette for a director you
-    don't know personally -- which also needs no name declension at all.
-    Teachers get the warmer first-name vocative when it's known."""
-    if role == "director":
+    Everyone with a known first name is greeted AS A PERSON -- directors
+    included, per explicit request -- with the title form kept only as the
+    director's no-name fallback, where it reads better than a bare
+    "Szanowny Panie,"."""
+    if role == "director" and not vocative:
         if gender == "female":
             return "Szanowna Pani Dyrektor,"
         if gender == "male":
@@ -426,7 +427,7 @@ def _salutation_casual(role: str, gender: str | None, vocative: str | None) -> s
     Without a name there is no casual form worth having: "Dzień dobry
     Panie," on its own reads as an unfinished sentence in Polish, so those
     rows fall back to the bare greeting rather than a broken one."""
-    if role == "director":
+    if role == "director" and not vocative:
         if gender == "female":
             return "Dzień dobry Pani Dyrektor,"
         if gender == "male":

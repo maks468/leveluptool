@@ -25,13 +25,18 @@ def test_both_registers_use_the_same_vocative():
         assert formal == casual, (name, formal, casual)
 
 
-def test_the_casual_director_form_keeps_the_title():
+def test_the_casual_director_form_greets_the_person_by_first_name():
     from levelup.services import salutations as s
 
     female = dict(zip(s.csv_headers("director"), s.csv_values("Agnieszka Iłendo", "director")))
-    assert female["director_salutation_casual"] == "Dzień dobry Pani Dyrektor,"
+    assert female["director_salutation_casual"] == "Dzień dobry Pani Agnieszko,"
     male = dict(zip(s.csv_headers("director"), s.csv_values("Paweł Wójcik", "director")))
-    assert male["director_salutation_casual"] == "Dzień dobry Panie Dyrektorze,"
+    assert male["director_salutation_casual"] == "Dzień dobry Panie Pawle,"
+
+    # A director with no usable first name keeps the TITLE form -- for this
+    # one role it reads better than a bare "Dzień dobry Panie,".
+    nameless = dict(zip(s.csv_headers("director"), s.csv_values("Iłendo", "director")))
+    assert nameless["director_salutation_casual"] in ("Dzień dobry Pani Dyrektor,", "Dzień dobry,")
 
 
 def test_a_nameless_row_falls_back_to_the_bare_greeting():
