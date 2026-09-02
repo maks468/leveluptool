@@ -158,3 +158,33 @@ def test_a_real_role_label_deep_in_a_long_page_beats_shallow_bio_decoys():
     capped = _cap_for_llm(text)
     assert len(capped) <= _MAX_LLM_PAGE_CHARS
     assert "Karolina Kaniowska" in capped, "the real English teacher's role label must survive the cap"
+
+
+def test_a_german_language_school_homepage_verifies():
+    """wbs.pl -- Willy-Brandt-Schule, a real Warsaw primary in this
+    register -- is German-first: its title says "Begegnungsschule", never
+    "szkoła", so the school's own genuine homepage was rejected and the
+    school could never be enriched."""
+    from levelup.services.enrichment.scraper import _verify_school_site
+
+    html = "<html><head><title>WBS - Deutsch-Polnische Begegnungsschule Warschau</title></head><body>Aktuelles</body></html>"
+    assert _verify_school_site(html)
+
+
+def test_a_js_app_shell_is_judged_from_its_markup_not_its_20_visible_chars():
+    """ekola.edu.pl ships 127KB of markup and 20 visible characters, so a
+    genuine school homepage failed verification and everything downstream
+    starved. With no readable text either way, the markup itself decides."""
+    from levelup.services.enrichment.scraper import _verify_school_site
+
+    shell = (
+        "<html><head><title>Główna - Ekola</title></head><body>"
+        '<div id="app">Close</div>'
+        '<script type="application/json">{"menu": ["Szkoła Podstawowa EKOLA", "Kadra"]}</script>'
+        + "<script>var x=1;</script>" * 200
+        + "</body></html>"
+    )
+    assert _verify_school_site(shell)
+    # ...while a page with REAL text keeps being judged on that text alone:
+    munic = "<html><head><title>Urząd Miejski</title></head><body>" + ("Biuletyn informacji publicznej urzędu. " * 20) + "</body></html>"
+    assert not _verify_school_site(munic)

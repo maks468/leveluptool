@@ -2471,6 +2471,12 @@ _MUNICIPAL_TITLE_KEYWORDS = ("urząd", "urzad", "gmina", "starostwo powiatowe")
 _SCHOOL_TITLE_KEYWORDS = (
     "szkoł", "szkol", "przedszkol", "zespół szkó", "zespol szko", "liceum", "technikum", "gimnazjum",
     "placówek oświatow", "placowek oswiatow",
+    # International schools in Poland present themselves in their partner
+    # language -- wbs.pl (Willy-Brandt-Schule, a real Warsaw SP in this
+    # register) is German-first and its title says "Begegnungsschule",
+    # never "szkoła", so verification rejected the school's own genuine
+    # homepage and everything downstream starved.
+    "school", "schule", "école", "ecole", "colegio",
 )
 
 
@@ -2514,6 +2520,15 @@ def _verify_school_site(html: str) -> bool:
     ]
     body_text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))[:1500]
     haystack = " ".join([title, *meta_bits, body_text]).lower()
+    # A JS app shell renders almost NO text to read -- ekola.edu.pl ships
+    # 127KB of markup and 20 visible characters ("Główna - Ekola Close"),
+    # so a genuine school homepage failed verification and everything
+    # downstream (crawl, search fallback, browser rendering) was starved.
+    # When the visible text can't possibly identify the page either way,
+    # judge from the markup itself: a school's shell still carries school
+    # words in its meta tags, nav labels, and asset paths.
+    if len(body_text) < 200:
+        haystack = " ".join([haystack, html[:30000].lower()])
     if any(kw in haystack for kw in _MUNICIPAL_TITLE_KEYWORDS):
         return False
     return any(kw in haystack for kw in _SCHOOL_TITLE_KEYWORDS)
