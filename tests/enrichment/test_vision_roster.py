@@ -198,11 +198,17 @@ def test_a_complex_hubs_rosters_are_read_own_school_first():
     ]
     page = _page(*urls)
 
-    got_sp = _vision_candidates([page], limit=3, school_level="PRIMARY")
+    # The REAL SchoolLevel enum, not a string: its NAME is "PRIMARY" but
+    # its VALUE is "primary", and rank comparing against the wrong one made
+    # every file tie -- document order survived and the group-0 roster was
+    # read first for the liceum a second time.
+    from levelup.models.school import SchoolLevel
+
+    got_sp = _vision_candidates([page], limit=3, school_level=SchoolLevel.PRIMARY)
     assert "4-8" in got_sp[0], got_sp                       # the SP reads its own 4-8 roster first
     assert all("Liceum" not in u and "Branzowa" not in u for u in got_sp[:2]), got_sp
 
-    got_lo = _vision_candidates([page], limit=3, school_level="LICEUM")
+    got_lo = _vision_candidates([page], limit=3, school_level=SchoolLevel.LICEUM)
     assert "Liceum" in got_lo[0], got_lo                    # the liceum reads ITS roster first
     assert "GRUPY-0" not in got_lo[0], got_lo
 

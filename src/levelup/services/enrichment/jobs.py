@@ -188,7 +188,10 @@ def _vision_rank(url: str, school_level: str | None) -> int:
     """Lower reads first: this school's own roster, then a specific 4-8
     roster for a primary, then unlabelled files, then the preschool group
     roster, then a SIBLING school's roster."""
-    school_level = getattr(school_level, "value", school_level)  # SchoolLevel enum or str
+    # SchoolLevel enum (whose NAME is "LICEUM" but whose value is
+    # "liceum") or a plain string from either convention.
+    school_level = getattr(school_level, "name", school_level)
+    school_level = str(school_level).upper() if school_level else None
     if not school_level or school_level not in _VISION_LEVEL_RES:
         return 2
     low = url.lower()
@@ -280,7 +283,7 @@ def _run_vision_extraction(result: dict, school: School, needed_roles: set[str])
         # preschool. On a complex hub the group-0 roster sits next to the
         # liceum's, and this is the last line of defence when the
         # liceum's own roster read yields nothing.
-        level_value = getattr(school.level, "value", school.level)
+        level_value = str(getattr(school.level, "name", school.level) or "").upper()
         records = extraction.staff
         if level_value in ("LICEUM", "TECHNIKUM"):
             records = [r for r in records if not _VISION_PRESCHOOL_RE.search(r.evidence or "")]
