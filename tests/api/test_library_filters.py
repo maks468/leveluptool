@@ -325,3 +325,16 @@ def test_inactive_schools_stay_excluded(session):
 
     assert "director-personal-email" not in names_matching(session, enrichment="successful")
     assert "director-personal-email" not in names_matching(session, pipeline_status="in")
+
+
+def test_attempted_nothing_found_is_the_ran_but_empty_intersection(session):
+    """The two existing questions ("what did enrichment FIND" and "did it
+    ever RUN") leave one set invisible: schools where a run happened and
+    came back empty -- the re-run candidates after a crawler fix. The new
+    value must be exactly attempted ∩ not_enriched."""
+    from levelup.models.school import School
+
+    got = {s.name for s in session.query(School).filter(_enrichment_predicate("attempted_nothing_found"))}
+    levels = expected_levels(session)
+    want = {name for name in ATTEMPTED if levels[name] == "not_enriched"}
+    assert got == want and want, (got, want)

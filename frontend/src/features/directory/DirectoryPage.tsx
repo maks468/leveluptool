@@ -33,6 +33,7 @@ const ENRICHMENT_OPTIONS = [
   { value: "partial", label: "· Partial" },
   { value: "basic", label: "· Basic" },
   { value: "attempted", label: "Attempted" },
+  { value: "attempted_nothing_found", label: "Attempted — nothing found" },
   { value: "never_attempted", label: "Never attempted" },
 ] as const
 

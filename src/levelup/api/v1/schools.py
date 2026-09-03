@@ -338,6 +338,11 @@ def _enrichment_predicate(enrichment: str):
         # having been attempted.
         "attempted": attempted,
         "never_attempted": not_(attempted),
+        # The intersection the two questions leave hidden: enrichment RAN
+        # and came back with nothing -- the schools worth a re-run after a
+        # crawler fix, as opposed to never-tried ones (fresh ground) or
+        # enriched ones (already yielding).
+        "attempted_nothing_found": and_(attempted, not_(any_level)),
     }.get(enrichment)
 
 
@@ -488,7 +493,7 @@ def list_schools(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    enrichment: str = Query("all", description="all|enriched|not_enriched|complete|successful|successful_teacher|partial|basic|attempted|never_attempted"),
+    enrichment: str = Query("all", description="all|enriched|not_enriched|complete|successful|successful_teacher|partial|basic|attempted|attempted_nothing_found|never_attempted"),
     enrichment_issue: str = Query(
         "all",
         description=(
@@ -573,7 +578,7 @@ def count_schools(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    enrichment: str = Query("all", description="all|enriched|not_enriched|complete|successful|successful_teacher|partial|basic|attempted|never_attempted"),
+    enrichment: str = Query("all", description="all|enriched|not_enriched|complete|successful|successful_teacher|partial|basic|attempted|attempted_nothing_found|never_attempted"),
 ):
     query = _apply_filters(
         _base_query(session).with_entities(School.id),
@@ -611,7 +616,7 @@ def list_school_ids(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    enrichment: str = Query("all", description="all|enriched|not_enriched|complete|successful|successful_teacher|partial|basic|attempted|never_attempted"),
+    enrichment: str = Query("all", description="all|enriched|not_enriched|complete|successful|successful_teacher|partial|basic|attempted|attempted_nothing_found|never_attempted"),
 ):
     """Every school id matching the given filters, across every page --
     lets the Library's "select all N matching my filters" checkbox act on
@@ -653,7 +658,7 @@ def export_schools_csv(
     score_min: int | None = None,
     score_max: int | None = None,
     score_include_unscored: bool = True,
-    enrichment: str = Query("all", description="all|enriched|not_enriched|complete|successful|successful_teacher|partial|basic|attempted|never_attempted"),
+    enrichment: str = Query("all", description="all|enriched|not_enriched|complete|successful|successful_teacher|partial|basic|attempted|attempted_nothing_found|never_attempted"),
     sort: str = "score:desc",
 ):
     """CSV export of a filtered Library segment -- for handing a batch to a

@@ -24,6 +24,7 @@ const ENRICHMENT_OPTIONS = [
   { value: "partial", label: "· Partial — teacher named" },
   { value: "basic", label: "· Basic — director + office email" },
   { value: "attempted", label: "Attempted — ran, any outcome" },
+  { value: "attempted_nothing_found", label: "Attempted — ran, nothing found" },
   { value: "never_attempted", label: "Never attempted" },
 ] as const
 
