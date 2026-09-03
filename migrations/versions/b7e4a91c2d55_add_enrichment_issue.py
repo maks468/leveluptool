@@ -1,13 +1,13 @@
 """Add schools.enrichment_issue -- where the last enrichment stopped short.
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: b7e4a91c2d55
 Revises: c9d3e4f5a6b7
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a1b2c3d4e5f6"
+revision = "b7e4a91c2d55"
 down_revision = "c9d3e4f5a6b7"
 branch_labels = None
 depends_on = None
