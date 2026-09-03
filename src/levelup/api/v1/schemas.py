@@ -186,6 +186,9 @@ class DirectoryEntryOut(BaseModel):
     status: str  # available | pipeline | campaign
     campaign_name: str | None
     stage: str | None
+    # Where the last enrichment stopped short (jobs.ENRICHMENT_ISSUES), or
+    # None when nothing failed / never enriched.
+    enrichment_issue: str | None = None
 
 
 class DirectoryListOut(BaseModel):

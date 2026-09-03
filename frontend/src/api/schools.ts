@@ -113,6 +113,7 @@ export interface DirectoryQuery {
   scoreMin?: number | null
   scoreMax?: number | null
   enrichment?: string
+  enrichmentIssue?: string
   sort?: string
   page?: number
   pageSize?: number
@@ -133,6 +134,7 @@ export async function listDirectory(args: DirectoryQuery = {}): Promise<Director
   if (args.scoreMin !== null && args.scoreMin !== undefined) params.set("score_min", String(args.scoreMin))
   if (args.scoreMax !== null && args.scoreMax !== undefined) params.set("score_max", String(args.scoreMax))
   if (args.enrichment && args.enrichment !== "all") params.set("enrichment", args.enrichment)
+  if (args.enrichmentIssue && args.enrichmentIssue !== "all") params.set("enrichment_issue", args.enrichmentIssue)
   if (args.sort) params.set("sort", args.sort)
   params.set("page", String(args.page ?? 1))
   params.set("page_size", String(args.pageSize ?? 50))

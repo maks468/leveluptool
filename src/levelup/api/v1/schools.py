@@ -449,6 +449,7 @@ def _to_out(
             "school_profile": school.school_profile,
             "director_name": school.director_name,
             "english_teacher_name": school.english_teacher_name,
+            "enrichment_issue": school.enrichment_issue,
             "specialty": school.specialty,
             "name_disambiguator": school.name_disambiguator,
             "enrichment_level": enrichment_level,
@@ -488,6 +489,14 @@ def list_schools(
     score_max: int | None = None,
     score_include_unscored: bool = True,
     enrichment: str = Query("all", description="all|enriched|not_enriched|complete|successful|successful_teacher|partial|basic|attempted|never_attempted"),
+    enrichment_issue: str = Query(
+        "all",
+        description=(
+            "Filter by where the last enrichment stopped short: all|any_issue|"
+            "website_missing|website_unreachable|website_rejected|no_staff_page_found|"
+            "teacher_not_published|teacher_email_not_published"
+        ),
+    ),
     sort: str = "score:desc",
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
@@ -510,6 +519,13 @@ def list_schools(
         score_include_unscored=score_include_unscored,
         enrichment=enrichment,
     )
+    # isinstance guard: called directly (tests, internal use) the FastAPI
+    # Query default object arrives instead of a string.
+    if isinstance(enrichment_issue, str) and enrichment_issue != "all":
+        if enrichment_issue == "any_issue":
+            query = query.filter(School.enrichment_issue.isnot(None))
+        else:
+            query = query.filter(School.enrichment_issue == enrichment_issue)
 
     total = query.count()
     if result_limit is not None:
@@ -781,6 +797,14 @@ def directory(
     score_min: int | None = None,
     score_max: int | None = None,
     enrichment: str = Query("all", description="same values as the Library's enrichment filter"),
+    enrichment_issue: str = Query(
+        "all",
+        description=(
+            "Where the last enrichment stopped short: all|any_issue|website_missing|"
+            "website_unreachable|website_rejected|no_staff_page_found|"
+            "teacher_not_published|teacher_email_not_published"
+        ),
+    ),
     sort: str = "name:asc",
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
@@ -828,6 +852,11 @@ def directory(
     enrichment_predicate = _enrichment_predicate(enrichment)
     if enrichment_predicate is not None:
         base = base.filter(enrichment_predicate)
+    if isinstance(enrichment_issue, str) and enrichment_issue != "all":
+        if enrichment_issue == "any_issue":
+            base = base.filter(School.enrichment_issue.isnot(None))
+        else:
+            base = base.filter(School.enrichment_issue == enrichment_issue)
 
     counts = {
         "pipeline": base.filter(PipelineState.school_id.isnot(None)).count(),
@@ -866,6 +895,7 @@ def directory(
             status="campaign" if campaign_name else ("pipeline" if stage else "available"),
             campaign_name=campaign_name,
             stage=stage.value if stage else None,
+            enrichment_issue=school.enrichment_issue,
         )
         for school, stage, campaign_name in rows
     ]

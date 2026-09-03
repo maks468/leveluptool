@@ -99,6 +99,12 @@ class School(Base):
 
     director_name: Mapped[str | None] = mapped_column(String, nullable=True)
     english_teacher_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    # WHERE the last enrichment run stopped short, one value per school --
+    # written by enrich_school on every run, so it always reflects the most
+    # recent attempt. None means nothing failed (teacher email found) or the
+    # school was never enriched (tell them apart by tier). The vocabulary is
+    # ENRICHMENT_ISSUES in jobs.py.
+    enrichment_issue: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
     # Special-education population the school serves (e.g. "Special-needs
     # school; Visual impairment"), detected during enrichment from the

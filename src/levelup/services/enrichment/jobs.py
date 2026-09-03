@@ -798,6 +798,44 @@ def create_job(session, school_ids: list[int], requested_by: int, is_automatic: 
     return job
 
 
+# The searchable answer to "where did enrichment stop short for this
+# school?", written on every run. Ordered from worst to best outcome; a
+# school gets the FIRST stage it failed at.
+ENRICHMENT_ISSUES = (
+    "website_missing",        # no website known and the search found none
+    "website_unreachable",    # a site is on file but nothing on it answered
+    "website_rejected",       # a page answered but did not verify as this school
+    "no_staff_page_found",    # site read, but no page could prove a director/teacher
+    "teacher_not_published",  # staff pages read, no English teacher named on them
+    "teacher_email_not_published",  # teacher named, own address not published
+)
+
+
+def _derive_enrichment_issue(
+    *,
+    sources_checked: list[dict],
+    llm_pages: list,
+    teacher_name: str | None,
+    teacher_email: str | None,
+    website_url: str | None,
+) -> str | None:
+    if teacher_email:
+        return None  # complete -- nothing failed
+    if teacher_name:
+        return "teacher_email_not_published"
+    site_sources = [x for x in sources_checked if "rspo.gov.pl" not in (x.get("url") or "")]
+    reached = [x for x in site_sources if x.get("status") == "ok"]
+    if not reached:
+        if any(x.get("status") == "not_a_school_site" for x in site_sources):
+            return "website_rejected"
+        if website_url or site_sources:
+            return "website_unreachable"
+        return "website_missing"
+    if not llm_pages:
+        return "no_staff_page_found"
+    return "teacher_not_published"
+
+
 def enrich_school(session, school: School, *, job_id: int | None, requested_by: int | None) -> dict:
     """The complete per-school enrichment logic: RSPO lookup, crawl, last-
     resort search, contact merge/upsert, activity logging. Extracted out of
@@ -1271,7 +1309,16 @@ def enrich_school(session, school: School, *, job_id: int | None, requested_by: 
                 "status": "ok" if rspo_info else "unreachable",
             },
         )
+    school.enrichment_issue = _derive_enrichment_issue(
+        sources_checked=sources_checked,
+        llm_pages=llm_pages,
+        teacher_name=school.english_teacher_name,
+        teacher_email=teacher_email,
+        website_url=school.website_url,
+    )
+
     metadata = {
+        "enrichment_issue": school.enrichment_issue,
         "found_email": bool(general_email or director_email or teacher_email),
         "found_phone": bool(phone),
         "found_director_email": bool(director_email),

@@ -217,6 +217,16 @@ export type FacetScope = "library" | "pipeline" | "register"
 export type DirectoryStatus = "available" | "pipeline" | "campaign"
 
 /** One school in the full-register Directory, with its current assignment. */
+/** Where the last enrichment stopped short for a school, or null when
+ * nothing failed (teacher email found) / never enriched. */
+export type EnrichmentIssue =
+  | "website_missing"
+  | "website_unreachable"
+  | "website_rejected"
+  | "no_staff_page_found"
+  | "teacher_not_published"
+  | "teacher_email_not_published"
+
 export interface DirectoryEntry {
   id: number
   name: string
@@ -228,6 +238,7 @@ export interface DirectoryEntry {
   status: DirectoryStatus
   campaign_name: string | null
   stage: PipelineStage | null
+  enrichment_issue: EnrichmentIssue | null
 }
 
 export interface DirectoryListResponse {

@@ -36,6 +36,28 @@ const ENRICHMENT_OPTIONS = [
   { value: "never_attempted", label: "Never attempted" },
 ] as const
 
+/** Where the last enrichment run stopped short -- the searchable failure
+ * stage, written on every run. */
+const ENRICHMENT_ISSUE_OPTIONS = [
+  { value: "all", label: "Any issue status" },
+  { value: "any_issue", label: "Has an issue" },
+  { value: "website_missing", label: "· No website found" },
+  { value: "website_unreachable", label: "· Website unreachable" },
+  { value: "website_rejected", label: "· Website not this school" },
+  { value: "no_staff_page_found", label: "· No staff page found" },
+  { value: "teacher_not_published", label: "· Teacher not published" },
+  { value: "teacher_email_not_published", label: "· Teacher email not published" },
+] as const
+
+export const ENRICHMENT_ISSUE_LABELS: Record<string, string> = {
+  website_missing: "No website found",
+  website_unreachable: "Website unreachable",
+  website_rejected: "Website not this school",
+  no_staff_page_found: "No staff page found",
+  teacher_not_published: "Teacher not published",
+  teacher_email_not_published: "Teacher email not published",
+}
+
 /** The full register, read-only: every school and where it currently
  * lives -- Available (still in the Library pool), Pipeline (with its
  * stage), or the campaign it's parked in. Nothing ever disappears from
@@ -54,6 +76,7 @@ export function DirectoryPage() {
   const [scoreMin, setScoreMin] = useState<number | null>(null)
   const [scoreMax, setScoreMax] = useState<number | null>(null)
   const [enrichment, setEnrichment] = useState("all")
+  const [enrichmentIssue, setEnrichmentIssue] = useState("all")
   const [page, setPage] = useState(1)
   const [selectedId, setSelectedId] = useState<number | null>(null)
 
@@ -83,6 +106,7 @@ export function DirectoryPage() {
     scoreMin,
     scoreMax,
     enrichment,
+    enrichmentIssue,
     page,
     pageSize: PAGE_SIZE,
   }
@@ -237,15 +261,26 @@ export function DirectoryPage() {
             <option key={o.value} value={o.value}>{o.label}</option>
           ))}
         </select>
+        <select
+          className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
+          title="Where the last enrichment run stopped short"
+          value={enrichmentIssue}
+          onChange={(e) => { setEnrichmentIssue(e.target.value); setPage(1) }}
+        >
+          {ENRICHMENT_ISSUE_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
         {(voivodeship || city || schoolType !== "all" || ownership !== "all" || studentsMin !== null ||
-          studentsMax !== null || scoreMin !== null || scoreMax !== null || enrichment !== "all") && (
+          studentsMax !== null || scoreMin !== null || scoreMax !== null || enrichment !== "all" ||
+          enrichmentIssue !== "all") && (
           <button
             type="button"
             className="text-xs text-[var(--color-accent)] hover:underline"
             onClick={() => {
               setVoivodeship(null); setCity(null); setSchoolType("all"); setOwnership("all")
               setStudentsMin(null); setStudentsMax(null); setScoreMin(null); setScoreMax(null)
-              setEnrichment("all"); setPage(1)
+              setEnrichment("all"); setEnrichmentIssue("all"); setPage(1)
             }}
           >
             Clear filters
@@ -262,20 +297,21 @@ export function DirectoryPage() {
               <th className="px-3 py-2">City</th>
               <th className="px-3 py-2">Voivodeship</th>
               <th className="px-3 py-2">Score</th>
+              <th className="px-3 py-2">Enrichment issue</th>
               <th className="px-3 py-2">Status</th>
             </tr>
           </thead>
           <tbody>
             {isLoading && (
               <tr>
-                <td colSpan={6} className="px-3 py-6 text-center text-[var(--color-text-muted)]">
+                <td colSpan={7} className="px-3 py-6 text-center text-[var(--color-text-muted)]">
                   Loading&hellip;
                 </td>
               </tr>
             )}
             {!isLoading && data?.items.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-3 py-6 text-center text-[var(--color-text-muted)]">
+                <td colSpan={7} className="px-3 py-6 text-center text-[var(--color-text-muted)]">
                   No schools match.
                 </td>
               </tr>
@@ -297,6 +333,9 @@ export function DirectoryPage() {
                   <DataValueCell value={entry.voivodeship} />
                 </td>
                 <td className="px-3 py-2">{entry.score !== null ? `${entry.score}/100` : "—"}</td>
+                <td className="px-3 py-2 text-xs text-[var(--color-text-muted)]">
+                  {entry.enrichment_issue ? ENRICHMENT_ISSUE_LABELS[entry.enrichment_issue] ?? entry.enrichment_issue : "—"}
+                </td>
                 <td className="px-3 py-2">{statusBadge(entry)}</td>
               </tr>
             ))}
