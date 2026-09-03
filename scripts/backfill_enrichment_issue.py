@@ -25,7 +25,8 @@ def main(apply: bool) -> None:
     changed = 0
     counts: dict[str, int] = {}
     for school_id, row in latest.items():
-        meta = json.loads(row.metadata_json or "{}")
+        raw = row.metadata_json
+        meta = raw if isinstance(raw, dict) else json.loads(raw or "{}")
         school = session.get(School, school_id)
         if school is None:
             continue
